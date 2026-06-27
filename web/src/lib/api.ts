@@ -50,6 +50,8 @@ export interface ChatCitation {
   detector?: string;
   confidenceReason?: string;
   confidence?: Confidence;
+  mappingBasis?: "exact-line" | "same-file";
+  evidenceStrength?: "strong" | "weak";
 }
 
 export interface ChatSession {

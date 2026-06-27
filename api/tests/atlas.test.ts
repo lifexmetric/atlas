@@ -16,7 +16,7 @@ import { buildWorkspaceGraph } from "../src/graph/workspace.js";
 import { buildHandoffMap, buildScanContext } from "../src/graph/context.js";
 import { buildGraphFromArtifacts } from "../src/graph/normalize.js";
 import { parseGitHubRepo, repoUrlSchema } from "../src/github/url.js";
-import { parseGitHubPullRequestUrl, parsePatchHunks } from "../src/github/pr.js";
+import { parseGitHubPullRequestUrl, parsePatchHunks, type PublicPullRequest } from "../src/github/pr.js";
 import { buildPullRequestHandoffRecord, buildPullRequestMemoryFacts, mapPullRequestToGraph } from "../src/handoffs/pr-handoff.js";
 import { scanRepository } from "../src/scanner/scanner.js";
 import { buildApp } from "../src/server/app.js";
@@ -30,6 +30,7 @@ import type {
   ChatContextBundle,
   DurableMemoryFact,
   GraphData,
+  HandoffContextMap,
   RepositoryRecord,
 } from "../src/types/domain.js";
 import { compactForPrompt, redactSecrets } from "../src/util/redact.js";
@@ -327,6 +328,80 @@ describe("pull request handoff intake", () => {
     expect(hunks).toHaveLength(1);
     expect(hunks[0].addedLines.some((line) => line.content.includes("[REDACTED]"))).toBe(true);
     expect(JSON.stringify(hunks)).not.toContain(FAKE_STRIPE_TOKEN);
+  });
+
+  it("keeps long parsed patch hunks complete for agent packets", () => {
+    const longPatch = [
+      "@@ -1,1 +1,260 @@",
+      " export const unchanged = true;",
+      ...Array.from({ length: 258 }, (_, index) => `+export const generated_${index} = "${"x".repeat(72)}";`),
+      "+export const final_long_hunk_line = true;",
+    ].join("\n");
+
+    const hunks = parsePatchHunks("src/large-change.ts", longPatch);
+
+    expect(hunks).toHaveLength(1);
+    expect(hunks[0].patch.length).toBeGreaterThan(8000);
+    expect(hunks[0].patch).toContain("final_long_hunk_line");
+  });
+
+  it("does not cap mapped nodes or edges in handoff mappings", () => {
+    const context: HandoffContextMap = {
+      purpose: "Large mapping fixture",
+      repositoryId: "repo_fixture",
+      commitSha: "scan123",
+      files: [{
+        filePath: "src/many.ts",
+        nodes: Array.from({ length: 10 }, (_, index) => ({
+          nodeId: `node_${index}`,
+          label: `service-${index}`,
+          kind: "service" as const,
+          confidence: "confirmed" as const,
+          evidenceId: `node_ev_${index}`,
+          lineStart: 10,
+          lineEnd: 12,
+          snippet: `service ${index}`,
+          detector: "test-node",
+          confidenceReason: "test evidence",
+        })),
+        edges: Array.from({ length: 11 }, (_, index) => ({
+          edgeId: `edge_${index}`,
+          source: `node_${index % 10}`,
+          target: `node_${(index + 1) % 10}`,
+          kind: "sync" as const,
+          confidence: "confirmed" as const,
+          evidenceId: `edge_ev_${index}`,
+          lineStart: 10,
+          lineEnd: 12,
+          snippet: `edge ${index}`,
+          detector: "test-edge",
+          confidenceReason: "test evidence",
+        })),
+      }],
+    };
+    const hunk = parsePatchHunks("src/many.ts", "@@ -10,2 +10,3 @@\n export const a = 1;\n+export const b = 2;")[0];
+    const pr: PublicPullRequest = {
+      url: "https://github.com/atlas/sample-service/pull/99",
+      owner: "atlas",
+      repo: "sample-service",
+      number: 99,
+      title: "Large mapping fixture",
+      state: "open",
+      author: "dev",
+      publicAccess: true,
+      base: { owner: "atlas", repo: "sample-service", ref: "main", sha: "base99" },
+      head: { owner: "atlas", repo: "sample-service", ref: "handoff", sha: "head99" },
+      changedFiles: [{ filename: "src/many.ts", status: "modified", additions: 1, deletions: 0, changes: 1, patch: hunk.patch }],
+      commits: [{ sha: "head99", message: "Large mapping fixture", author: "dev", date: "2026-06-27T00:00:00Z" }],
+      hunks: [hunk],
+      fetchCompleteness: { filesTruncated: false, commitsTruncated: false, filePagesFetched: 1, commitPagesFetched: 1 },
+    };
+
+    const [mapping] = mapPullRequestToGraph({ pr, context });
+
+    expect(mapping.nodes).toHaveLength(10);
+    expect(mapping.edges).toHaveLength(11);
+    expect([...mapping.nodes, ...mapping.edges].every((item) => item.basis === "exact-line")).toBe(true);
   });
 
   it("maps PR hunks to scan evidence and extracts only evidence-backed memory facts", async () => {
@@ -941,6 +1016,56 @@ describe("handoff chat backend", () => {
         workspaceId: "test",
         sessionId: "chat_test",
         content: "The database module is risky for handoff.",
+        context,
+      }),
+    ).toHaveLength(0);
+  });
+
+  it("does not create durable memory facts from weak handoff proximity citations", () => {
+    const context: ChatContextBundle = {
+      workspaceId: "test",
+      question: "What did the PR touch?",
+      graphSummary: { repositories: 1, scans: 1, nodes: 0, edges: 0, crossRepoConnections: 0 },
+      repositories: [{
+        id: "repo_fixture",
+        owner: "atlas",
+        name: "sample-service",
+        packageName: "@atlas/sample-service",
+        lastCommitSha: "scan123",
+      }],
+      selected: { type: "handoff", id: "handoff_same_file" },
+      nodes: [],
+      edges: [],
+      evidence: [{
+        id: "E1",
+        stableId: "node_ev_same_file",
+        label: "PR #12 has same-file proximity to api-service; verify exact impact",
+        subjectType: "node",
+        subjectId: "api-service",
+        repositoryId: "repo_fixture",
+        scanId: "scan_fixture",
+        commitSha: "scan123",
+        filePath: "src/server.ts",
+        lineStart: 20,
+        lineEnd: 24,
+        snippet: "export function buildServer() {}",
+        detector: "test-node",
+        confidenceReason: "PR hunk touches the same file as this node evidence; verify exact runtime impact.",
+        confidence: "inferred",
+        mappingBasis: "same-file",
+        evidenceStrength: "weak",
+      }],
+      generatedMarkdown: "Weak handoff context with same-file proximity.",
+      previousMessages: [],
+      memoryFacts: [],
+      weakEvidence: true,
+    };
+
+    expect(
+      buildChatDurableMemoryFacts({
+        workspaceId: "test",
+        sessionId: "chat_same_file",
+        content: "The api service is definitely impacted by this PR. [E1]",
         context,
       }),
     ).toHaveLength(0);

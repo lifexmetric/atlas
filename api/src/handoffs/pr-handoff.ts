@@ -121,7 +121,6 @@ export function mapPullRequestToGraph(args: {
         const bExact = b.reason.startsWith("PR hunk line range") ? 1 : 0;
         return bExact - aExact || confidenceRank(b.confidence) - confidenceRank(a.confidence);
       })
-      .slice(0, 8)
       .map(({ risks: _risks, ...node }) => node);
 
     const edges = (fileContext?.edges ?? [])
@@ -164,7 +163,6 @@ export function mapPullRequestToGraph(args: {
         const bExact = b.reason.startsWith("PR hunk line range") ? 1 : 0;
         return bExact - aExact || confidenceRank(b.confidence) - confidenceRank(a.confidence);
       })
-      .slice(0, 8)
       .map(({ risks: _risks, ...edge }) => edge);
 
     if (fileContext && nodes.length === 0 && edges.length === 0) {

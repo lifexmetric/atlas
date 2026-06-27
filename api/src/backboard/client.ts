@@ -141,6 +141,14 @@ export function buildDurableMemoryFacts(args: {
   return facts;
 }
 
+function isDurableChatCitation(citation: ChatContextBundle["evidence"][number]): boolean {
+  if (!citation?.filePath || !citation.lineStart) return false;
+  if (citation.mappingBasis === "same-file" || citation.evidenceStrength === "weak") return false;
+  if (citation.mappingBasis && citation.mappingBasis !== "exact-line") return false;
+  if (citation.evidenceStrength && citation.evidenceStrength !== "strong") return false;
+  return true;
+}
+
 export function buildChatDurableMemoryFacts(args: {
   workspaceId: string;
   sessionId: string;
@@ -155,7 +163,7 @@ export function buildChatDurableMemoryFacts(args: {
     const citedIds = Array.from(factText.matchAll(/\[(E\d+)\]/g)).map((match) => match[1]);
     if (citedIds.length === 0) return [];
     const citations = args.context.evidence.filter((citation) => citedIds.includes(citation.id));
-    const validCitations = citations.filter((citation) => citation?.filePath && citation.lineStart);
+    const validCitations = citations.filter(isDurableChatCitation);
     if (validCitations.length === 0) return [];
 
     const primary = validCitations[0];

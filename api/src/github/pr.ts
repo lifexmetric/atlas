@@ -237,7 +237,7 @@ export function parsePatchHunks(filePath: string, patch: string): PullRequestHun
       newStart: current.newStart,
       newLines: current.newLines,
       header: current.header,
-      patch: redactSecrets(body).slice(0, 8000),
+      patch: redactSecrets(body),
       addedLines: current.addedLines,
       removedLines: current.removedLines,
     });

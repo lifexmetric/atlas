@@ -346,6 +346,8 @@ export function buildChatContext(args: {
           detector: node.detector,
           confidenceReason: `${node.reason} Evidence came from scan commit ${node.provenance.scanCommitSha ?? "unknown"}, not PR head ${handoff.head.sha}.`,
           confidence: weak ? "inferred" : node.confidence,
+          mappingBasis: node.basis,
+          evidenceStrength: weak ? "weak" : "strong",
         };
         const key = evidenceKey(citation);
         if (!seenEvidence.has(key)) {
@@ -374,6 +376,8 @@ export function buildChatContext(args: {
           detector: edge.detector,
           confidenceReason: `${edge.reason} Evidence came from scan commit ${edge.provenance.scanCommitSha ?? "unknown"}, not PR head ${handoff.head.sha}.`,
           confidence: weak ? "inferred" : edge.confidence,
+          mappingBasis: edge.basis,
+          evidenceStrength: weak ? "weak" : "strong",
         };
         const key = evidenceKey(citation);
         if (!seenEvidence.has(key)) {
