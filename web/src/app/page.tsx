@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   ArrowRight,
   Share2,
@@ -125,6 +126,7 @@ function FeatureList() {
 }
 
 export default function LandingPage() {
+  const router = useRouter();
   const [repo, setRepo] = React.useState("");
   const [scanning, setScanning] = React.useState(false);
   const [creatingScan, setCreatingScan] = React.useState(false);
@@ -140,7 +142,7 @@ export default function LandingPage() {
     setScanning(false);
 
     if (!ATLAS_API_CONFIGURED) {
-      setError("Repository scanning needs a deployed Atlas API. Open Workspace to view the demo graph.");
+      router.push("/explore");
       return;
     }
 
