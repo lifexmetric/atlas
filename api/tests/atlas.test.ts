@@ -470,6 +470,67 @@ describe("API route schemas", () => {
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
+  it("protects all artifact-bearing read endpoints when API auth is configured", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "atlas-api-read-auth-"));
+    const db = openDatabase(path.join(tempDir, "atlas.db"));
+    migrate(db);
+    const repository = new AtlasRepository(db);
+    repository.ensureWorkspace("test");
+    const repo = repository.upsertRepository({
+      id: "repo_auth",
+      workspaceId: "test",
+      owner: "atlas",
+      name: "auth-fixture",
+      url: "https://github.com/atlas/auth-fixture",
+      cloneUrl: "https://github.com/atlas/auth-fixture.git",
+      packageName: "@atlas/sample-service",
+      lastCommitSha: "abc1234",
+    });
+    const scan = repository.createScan({ id: "scan_auth", workspaceId: "test", repositoryId: repo.id, repoUrl: repo.url });
+    const artifacts = await scanRepository(fixtureRoot, { maxFiles: 100, maxFileBytes: 100_000 });
+    const graph = buildGraphFromArtifacts({ repository: repo, commitSha: "abc1234", artifacts, backboard: fakeBackboard() });
+    const context = buildScanContext({ repository: repo, graph, commitSha: "abc1234" });
+    repository.addEvent({ scanId: scan.id, type: "scan", message: "fixture event" });
+    repository.replaceGraphRows({ workspaceId: "test", repositoryId: repo.id, scanId: scan.id, graph });
+    repository.completeScan({ scanId: scan.id, commitSha: "abc1234", graph, context, artifacts, backboard: fakeBackboard() });
+
+    const app = await buildApp({
+      config: loadConfig({
+        rootDir: tempDir,
+        databaseUrl: `file:${path.join(tempDir, "atlas.db")}`,
+        databasePath: path.join(tempDir, "atlas.db"),
+        workspaceId: "test",
+        backboardApiKey: "test",
+        apiAuthToken: "local-token",
+      }),
+      repository,
+    });
+
+    const endpoints = [
+      `/api/scans/${scan.id}`,
+      `/api/scans/${scan.id}/events`,
+      `/api/scans/${scan.id}/graph`,
+      `/api/scans/${scan.id}/context`,
+      `/api/scans/${scan.id}/handoff`,
+      `/api/scans/${scan.id}/export`,
+      "/api/workspaces/test/graph",
+      "/api/repositories?workspaceId=test",
+      `/api/nodes/${encodeURIComponent(graph.nodes[0].id)}`,
+      `/api/edges/${encodeURIComponent(graph.links[0].id)}`,
+    ];
+
+    for (const url of endpoints) {
+      const withoutAuth = await app.inject({ method: "GET", url });
+      const withAuth = await app.inject({ method: "GET", url, headers: { authorization: "Bearer local-token" } });
+      expect(withoutAuth.statusCode, url).toBe(401);
+      expect(withAuth.statusCode, url).toBe(200);
+    }
+
+    await app.close();
+    db.close();
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
   it("enforces configured GitHub allowed owners before cloning", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "atlas-allowed-orgs-"));
     const db = openDatabase(path.join(tempDir, "atlas.db"));

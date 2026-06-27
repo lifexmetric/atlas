@@ -86,14 +86,14 @@ export async function buildApp(args: {
     reply.status(202).send(scan);
   });
 
-  app.get("/api/scans/:scanId", async (request, reply) => {
+  app.get("/api/scans/:scanId", { preHandler: requireAuth }, async (request, reply) => {
     const { scanId } = paramsSchema.parse(request.params);
     const scan = args.repository.getScan(scanId);
     if (!scan) return reply.status(404).send({ error: "Not Found", message: "Scan not found" });
     return scan;
   });
 
-  app.get("/api/scans/:scanId/events", async (request, reply) => {
+  app.get("/api/scans/:scanId/events", { preHandler: requireAuth }, async (request, reply) => {
     const { scanId } = paramsSchema.parse(request.params);
     const scan = args.repository.getScan(scanId);
     if (!scan) return reply.status(404).send({ error: "Not Found", message: "Scan not found" });
@@ -103,7 +103,7 @@ export async function buildApp(args: {
     };
   });
 
-  app.get("/api/scans/:scanId/graph", async (request, reply) => {
+  app.get("/api/scans/:scanId/graph", { preHandler: requireAuth }, async (request, reply) => {
     const { scanId } = paramsSchema.parse(request.params);
     const scan = args.repository.getScan(scanId);
     if (!scan) return reply.status(404).send({ error: "Not Found", message: "Scan not found" });
@@ -111,28 +111,28 @@ export async function buildApp(args: {
     return scan.graph;
   });
 
-  app.get("/api/workspaces/:workspaceId/graph", async (request) => {
+  app.get("/api/workspaces/:workspaceId/graph", { preHandler: requireAuth }, async (request) => {
     const { workspaceId } = workspaceParamsSchema.parse(request.params);
     const repositories = args.repository.listRepositories(workspaceId);
     const scans = args.repository.listLatestCompletedScans(workspaceId);
     return buildWorkspaceGraph({ workspaceId, repositories, scans });
   });
 
-  app.get("/api/repositories", async (request) => {
+  app.get("/api/repositories", { preHandler: requireAuth }, async (request) => {
     const query = z.object({ workspaceId: z.string().optional() }).parse(request.query);
     return {
       repositories: args.repository.listRepositories(query.workspaceId),
     };
   });
 
-  app.get("/api/nodes/:nodeId", async (request, reply) => {
+  app.get("/api/nodes/:nodeId", { preHandler: requireAuth }, async (request, reply) => {
     const { nodeId } = nodeParamsSchema.parse(request.params);
     const node = args.repository.getNode(nodeId);
     if (!node) return reply.status(404).send({ error: "Not Found", message: "Node not found" });
     return node;
   });
 
-  app.get("/api/edges/:edgeId", async (request, reply) => {
+  app.get("/api/edges/:edgeId", { preHandler: requireAuth }, async (request, reply) => {
     const { edgeId } = edgeParamsSchema.parse(request.params);
     const edge = args.repository.getEdge(edgeId);
     if (!edge) return reply.status(404).send({ error: "Not Found", message: "Edge not found" });
