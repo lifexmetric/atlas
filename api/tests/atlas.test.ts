@@ -596,6 +596,41 @@ describe("handoff chat backend", () => {
     expect(extractDurableMemoryFacts(answer, context)).toHaveLength(0);
   });
 
+  it("marks answers with only unknown citations as ungrounded", () => {
+    const context = buildChatContext({
+      repository,
+      workspaceId: "test",
+      question: "Is the database module safe?",
+      scanId: "scan_fixture",
+    });
+
+    const answer = enforceEvidencePolicy("The database module is safe. [E999]", context);
+
+    expect(answer).toContain("Confidence: uncertain");
+    expect(answer).toContain("Invalid citations ignored: [E999]");
+    expect(answer).toContain("not supporting proof");
+    expect(answer).not.toContain("confirmed by retrieved scan evidence");
+    expect(extractDurableMemoryFacts(answer, context)).toHaveLength(0);
+  });
+
+  it("flags mixed valid and unknown citations without global confirmed confidence", () => {
+    const context = buildChatContext({
+      repository,
+      workspaceId: "test",
+      question: "What database risk should a handoff mention?",
+      scanId: "scan_fixture",
+    });
+
+    const answer = enforceEvidencePolicy("The database module is a handoff risk. [E1] [E999]", context);
+
+    expect(answer).toContain("Citation warning");
+    expect(answer).toContain("unknown citations ignored: [E999]");
+    expect(answer).toContain("Only known retrieved citations are grounded: [E1]");
+    expect(answer).toContain("partially grounded by known scan evidence only");
+    expect(answer).not.toContain("confirmed by retrieved scan evidence");
+    expect(extractDurableMemoryFacts(answer, context)).toHaveLength(0);
+  });
+
   it("serves the chat API routes with persisted assistant messages", async () => {
     const backboard = new RecordingBackboard();
     const app = await buildApp({

@@ -538,22 +538,39 @@ ${compactContext}`;
 
 export function enforceEvidencePolicy(content: string, context: ChatContextBundle): string {
   let trimmed = content.trim();
-  const hasCitation = /\[E\d+\]/.test(trimmed);
+  const citedIds = Array.from(trimmed.matchAll(/\[(E\d+)\]/g)).map((match) => match[1]);
+  const knownCitationIds = new Set(context.evidence.map((citation) => citation.id));
+  const validCitedIds = citedIds.filter((citationId) => knownCitationIds.has(citationId));
+  const invalidCitedIds = citedIds.filter((citationId) => !knownCitationIds.has(citationId));
+  const hasCitation = citedIds.length > 0;
+  const hasValidCitation = validCitedIds.length > 0;
   const hasNoEvidence = trimmed.includes("I do not have evidence for that in the scanned repos yet.");
   if (context.evidence.length === 0 && !hasNoEvidence) {
     return `${trimmed}\n\nConfidence: uncertain. I do not have evidence for that in the scanned repos yet.`;
   }
-  if (context.evidence.length > 0 && !hasCitation && !hasNoEvidence) {
+  if (context.evidence.length > 0 && (!hasCitation || !hasValidCitation) && !hasNoEvidence) {
     const citationIds = context.evidence.slice(0, 3).map((citation) => `[${citation.id}]`).join(" ");
     trimmed = `${trimmed}\n\nConfidence: uncertain. Retrieved scan context exists, but this answer did not cite specific evidence, so treat architectural claims as ungrounded.`;
     trimmed = `${trimmed}\n\nRetrieved context to inspect, not supporting proof for the answer: ${citationIds}.`;
+    if (invalidCitedIds.length > 0) {
+      trimmed = `${trimmed}\n\nInvalid citations ignored: ${invalidCitedIds.map((citationId) => `[${citationId}]`).join(" ")}.`;
+    }
+  } else if (context.evidence.length > 0 && invalidCitedIds.length > 0 && hasValidCitation && !hasNoEvidence) {
+    const invalidList = invalidCitedIds.map((citationId) => `[${citationId}]`).join(" ");
+    const validList = validCitedIds.map((citationId) => `[${citationId}]`).join(" ");
+    trimmed = `${trimmed}\n\nCitation warning: unknown citations ignored: ${invalidList}. Only known retrieved citations are grounded: ${validList}.`;
+    if (/\bconfidence\b/i.test(trimmed)) {
+      trimmed = `${trimmed}\n\nConfidence correction: partially grounded by known scan evidence only; unknown citations are not evidence.`;
+    } else {
+      trimmed = `${trimmed}\n\nConfidence: partially grounded by known scan evidence only; unknown citations are not evidence.`;
+    }
   } else if (context.weakEvidence && !/\b(inferred|uncertain|weak evidence)\b/i.test(trimmed)) {
     trimmed = `${trimmed}\n\nConfidence: inferred from limited evidence.`;
   }
-  if (context.evidence.length > 0 && hasCitation && !/\bconfidence\b/i.test(trimmed)) {
+  if (context.evidence.length > 0 && hasValidCitation && invalidCitedIds.length === 0 && !/\bconfidence\b/i.test(trimmed)) {
     trimmed = `${trimmed}\n\nConfidence: ${context.weakEvidence ? "inferred from limited evidence" : "confirmed by retrieved scan evidence"}.`;
   }
-  const firstCitation = hasCitation && context.evidence[0] ? `[${context.evidence[0].id}]` : "";
+  const firstCitation = hasValidCitation ? `[${validCitedIds[0]}]` : "";
   if (context.selected?.type === "node" && !/\bRelated nodes\/edges\b/i.test(trimmed)) {
     const node = context.nodes.find((item) => item.id === context.selected?.id);
     if (node) {
