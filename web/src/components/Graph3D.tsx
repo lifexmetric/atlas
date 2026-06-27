@@ -11,7 +11,7 @@ import {
 import { colorAlpha } from "./ui";
 
 export interface Graph3DHandle {
-  focusNode: (id: string) => void;
+  focusNode: (id: string, options?: { inspect?: boolean }) => void;
   resetView: () => void;
   zoomIn: () => void;
   zoomOut: () => void;
@@ -147,6 +147,14 @@ function domainTier(domain: string): number {
   return DOMAIN_TIER[domain] ?? 99;
 }
 
+function stableHash(input: string): number {
+  let h = 0;
+  for (let i = 0; i < input.length; i++) {
+    h = (h * 31 + input.charCodeAt(i)) >>> 0;
+  }
+  return h;
+}
+
 // ── Compact domain-band layout (used when node count > BAND_THRESHOLD) ───────
 
 const BAND = {
@@ -161,15 +169,29 @@ const BAND = {
   cols: 6,          // max chips per row within a domain band
   marginX: 32,
   marginTop: 48,
+  rowShiftMax: 28,  // max horizontal wobble within a band
 };
 
 const BAND_THRESHOLD = 35; // switch to band layout above this node count
+const DRAG_THRESHOLD = 4;
+const HOVER_REVEAL_DELAY = 180;
+const BAND_INSPECT_MIN_SCALE = 0.62;
+const GRAPH_INSPECT_MIN_SCALE = 0.82;
+const WHEEL_SENSITIVITY = 0.0011;
+const WHEEL_EASE = 0.42;
 
 interface Swimlane {
   domain: string;
   color: string;
   y: number;
   height: number;
+}
+
+interface DomainStats {
+  nodes: number;
+  internal: number;
+  inbound: number;
+  outbound: number;
 }
 
 interface BandLayout extends Layout {
@@ -198,7 +220,8 @@ function buildBandLayout(data: GraphData): BandLayout {
   const swimlanes: Swimlane[] = [];
 
   // How wide is the band content area?
-  const bandContentW = BAND.cols * BAND.chipW + (BAND.cols - 1) * BAND.chipGapX + BAND.domainPadX * 2;
+  const maxRowW = BAND.cols * BAND.chipW + (BAND.cols - 1) * BAND.chipGapX;
+  const bandContentW = maxRowW + BAND.domainPadX * 2;
   const totalW = bandContentW + BAND.marginX * 2;
 
   let curY = BAND.marginTop;
@@ -222,17 +245,44 @@ function buildBandLayout(data: GraphData): BandLayout {
 
     swimlanes.push({ domain, color, y: curY, height: bandH });
 
-    const startX = BAND.marginX + BAND.domainPadX;
-    nodes.forEach((n, i) => {
-      const col = i % cols;
-      const row = Math.floor(i / cols);
-      const x = startX + col * (BAND.chipW + BAND.chipGapX);
-      const y = curY + BAND.domainPadTop + row * (BAND.chipH + BAND.chipGapY);
-      positions.set(n.id, { x, y });
+    // Keep rows deterministic but avoid rigid rectangles: compact/expanded rows
+    // plus a gentle horizontal wave based on domain hash.
+    const rowLengths: number[] = [];
+    const seed = stableHash(domain);
+    let remaining = nodes.length;
+    for (let row = 0; row < rows; row++) {
+      const rowsLeft = rows - row;
+      const minLen = Math.max(1, remaining - (rowsLeft - 1) * cols);
+      const maxLen = Math.min(cols, remaining - (rowsLeft - 1));
+      const prefersCompact = (seed + row) % 3 === 0;
+      const targetLen = prefersCompact ? cols - 1 : cols;
+      const rowLen = Math.max(minLen, Math.min(targetLen, maxLen));
+      rowLengths.push(rowLen);
+      remaining -= rowLen;
+    }
 
-      const od = outDeg.get(n.id) ?? 0;
-      if (od > bestOut) { bestOut = od; entryId = n.id; }
-    });
+    const baseX = BAND.marginX + BAND.domainPadX;
+    const baseY = curY + BAND.domainPadTop;
+    let idx = 0;
+    for (let row = 0; row < rows; row++) {
+      const rowLen = rowLengths[row];
+      const rowW = rowLen * BAND.chipW + (rowLen - 1) * BAND.chipGapX;
+      const centeredX = (maxRowW - rowW) / 2;
+      const wave = Math.sin((row + (seed % 11) * 0.2) * 1.15);
+      const maxShift = Math.min(BAND.rowShiftMax, Math.max(0, centeredX - 2));
+      const rowShift = Math.round(wave * maxShift);
+      const rowStartX = baseX + centeredX + rowShift;
+      const y = baseY + row * (BAND.chipH + BAND.chipGapY);
+
+      for (let col = 0; col < rowLen; col++) {
+        const n = nodes[idx++];
+        const x = rowStartX + col * (BAND.chipW + BAND.chipGapX);
+        positions.set(n.id, { x, y });
+
+        const od = outDeg.get(n.id) ?? 0;
+        if (od > bestOut) { bestOut = od; entryId = n.id; }
+      }
+    }
 
     curY += bandH + BAND.domainGap;
   }
@@ -580,12 +630,25 @@ export const Graph3D = React.forwardRef<Graph3DHandle, Graph3DProps>(
     const [cullViewport, setCullViewport] = React.useState<{ l: number; t: number; r: number; b: number } | null>(null);
     const cullTimerRef = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
     const isDraggingRef = React.useRef(false);
-    const dragRef = React.useRef<{ startX: number; startY: number; baseX: number; baseY: number } | null>(null);
+    const dragRef = React.useRef<{
+      pointerId: number;
+      startX: number;
+      startY: number;
+      baseX: number;
+      baseY: number;
+      hasCapture: boolean;
+    } | null>(null);
     const containerRef = React.useRef<HTMLDivElement>(null);
     const canvasRef = React.useRef<HTMLCanvasElement>(null);
     const rafRef = React.useRef<number>(0);
+    const hoverIntentTimerRef = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+    const hoverClearTimerRef = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+    const suppressClickRef = React.useRef(false);
+    const viewRef = React.useRef(view);
     const canvasSizeRef = React.useRef({ w: 0, h: 0 }); // avoid GPU re-upload when size unchanged
     const dprRef = React.useRef(typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1);
+    const [hoveredNodeId, setHoveredNodeId] = React.useState<string | null>(null);
+    const [hoveredLinkId, setHoveredLinkId] = React.useState<string | null>(null);
 
     React.useEffect(() => {
       const el = containerRef.current;
@@ -602,24 +665,30 @@ export const Graph3D = React.forwardRef<Graph3DHandle, Graph3DProps>(
 
     // Passive wheel listener — lets compositor thread handle scroll without blocking.
     React.useEffect(() => {
+      viewRef.current = view;
+    }, [view]);
+
+    React.useEffect(() => {
       const el = containerRef.current;
       if (!el) return;
       function onWheel(e: WheelEvent) {
         e.preventDefault();
+        const current = viewRef.current;
         if (smooth) setSmooth(false);
-        const nextScale = Math.min(1.6, Math.max(0.18, view.scale - e.deltaY * 0.0012));
+        const targetScale = Math.min(1.6, Math.max(0.18, current.scale - e.deltaY * WHEEL_SENSITIVITY));
+        const nextScale = current.scale + (targetScale - current.scale) * WHEEL_EASE;
         const rect = el!.getBoundingClientRect();
         const mx = e.clientX - rect.left;
         const my = e.clientY - rect.top;
-        const gx = (mx - view.x) / view.scale;
-        const gy = (my - view.y) / view.scale;
+        const gx = (mx - current.x) / current.scale;
+        const gy = (my - current.y) / current.scale;
         setView({ scale: nextScale, x: mx - gx * nextScale, y: my - gy * nextScale });
       }
       // { passive: false } is needed to call preventDefault(), but we register
       // on the element directly (not via React) so we can mark it non-passive.
       el.addEventListener("wheel", onWheel, { passive: false });
       return () => el.removeEventListener("wheel", onWheel);
-    }, [view, smooth]);
+    }, [smooth]);
 
     // Lazily update cull viewport — during active drag use stale bounds.
     // This prevents React from re-rendering 114 node divs on every animation frame.
@@ -656,6 +725,7 @@ export const Graph3D = React.forwardRef<Graph3DHandle, Graph3DProps>(
       () => (layout as DagreLayout | BandLayout).swimlanes ?? [],
       [layout],
     );
+    const isBandLayout = (layout as BandLayout).layoutMode === "band";
 
     const centerOf = React.useCallback(
       (id: string): Point | null => {
@@ -701,27 +771,91 @@ export const Graph3D = React.forwardRef<Graph3DHandle, Graph3DProps>(
             nodes.add(l.target);
           }
         }
+      } else if (hoveredLinkId) {
+        const l = data.links.find((x) => x.id === hoveredLinkId);
+        if (l) {
+          links.add(l.id);
+          nodes.add(l.source);
+          nodes.add(l.target);
+        }
+      } else if (hoveredNodeId) {
+        nodes.add(hoveredNodeId);
+        for (const l of data.links) {
+          if (l.source === hoveredNodeId || l.target === hoveredNodeId) {
+            links.add(l.id);
+            nodes.add(l.source);
+            nodes.add(l.target);
+          }
+        }
       }
       return { hlNodes: nodes, hlLinks: links };
-    }, [data, selectedNodeId, selectedLinkId, criticalPathMode, criticalPathNodeIds, criticalPathLinkIds]);
+    }, [data, selectedNodeId, selectedLinkId, hoveredNodeId, hoveredLinkId, criticalPathMode, criticalPathNodeIds, criticalPathLinkIds]);
 
     const hasSelection = hlNodes.size > 0 || criticalPathMode;
     const showEntryPulse = !hasSelection;
 
+    const keepHover = React.useCallback(() => {
+      clearTimeout(hoverIntentTimerRef.current);
+      clearTimeout(hoverClearTimerRef.current);
+    }, []);
+
+    const clearHoverSoon = React.useCallback(() => {
+      clearTimeout(hoverIntentTimerRef.current);
+      clearTimeout(hoverClearTimerRef.current);
+      hoverClearTimerRef.current = setTimeout(() => {
+        setHoveredNodeId(null);
+        setHoveredLinkId(null);
+      }, 120);
+    }, []);
+
+    const beginNodeHover = React.useCallback((id: string) => {
+      if (isDraggingRef.current) return;
+      keepHover();
+      hoverIntentTimerRef.current = setTimeout(() => {
+        if (isDraggingRef.current) return;
+        setHoveredLinkId(null);
+        setHoveredNodeId(id);
+      }, HOVER_REVEAL_DELAY);
+    }, [keepHover]);
+
+    const beginLinkHover = React.useCallback((id: string) => {
+      if (isDraggingRef.current) return;
+      keepHover();
+      hoverIntentTimerRef.current = setTimeout(() => {
+        if (isDraggingRef.current) return;
+        setHoveredNodeId(null);
+        setHoveredLinkId(id);
+      }, HOVER_REVEAL_DELAY);
+    }, [keepHover]);
+
+    React.useEffect(
+      () => () => {
+        clearTimeout(hoverIntentTimerRef.current);
+        clearTimeout(hoverClearTimerRef.current);
+      },
+      [],
+    );
+
 
 
     const focusNode = React.useCallback(
-      (id: string) => {
+      (id: string, options?: { inspect?: boolean }) => {
         const center = centerOf(id);
         if (!center || size.w === 0 || size.h === 0) return;
+        const inspect = options?.inspect ?? false;
         setSmooth(true);
-        setView((current) => ({
-          ...current,
-          x: size.w / 2 - center.x * current.scale,
-          y: size.h / 2 - center.y * current.scale,
-        }));
+        setView((current) => {
+          const minInspectScale = isBandLayout ? BAND_INSPECT_MIN_SCALE : GRAPH_INSPECT_MIN_SCALE;
+          const nextScale = inspect ? Math.max(current.scale, minInspectScale) : current.scale;
+          return {
+            ...current,
+            scale: nextScale,
+            x: size.w / 2 - center.x * nextScale,
+            y: size.h / 2 - center.y * nextScale,
+          };
+        });
       },
-      [centerOf, size.h, size.w],
+      [centerOf, size.h, size.w, isBandLayout],
     );
 
     const fitView = React.useCallback(() => {
@@ -771,28 +905,43 @@ export const Graph3D = React.forwardRef<Graph3DHandle, Graph3DProps>(
     // Wheel is registered as a native non-passive listener above — no React handler needed.
 
     function handlePointerDown(event: React.PointerEvent<HTMLDivElement>) {
-      if ((event.target as HTMLElement).closest("[data-graph-control]")) return;
-      event.currentTarget.setPointerCapture(event.pointerId);
+      if (event.button !== 0) return;
       setSmooth(false);
       isDraggingRef.current = true;
+      suppressClickRef.current = false;
+      clearTimeout(hoverIntentTimerRef.current);
+      clearTimeout(hoverClearTimerRef.current);
+      setHoveredNodeId(null);
+      setHoveredLinkId(null);
       dragRef.current = {
+        pointerId: event.pointerId,
         startX: event.clientX,
         startY: event.clientY,
         baseX: view.x,
         baseY: view.y,
+        hasCapture: false,
       };
     }
 
     function handlePointerMove(event: React.PointerEvent<HTMLDivElement>) {
       const drag = dragRef.current;
       if (!drag) return;
-      const nx = drag.baseX + event.clientX - drag.startX;
-      const ny = drag.baseY + event.clientY - drag.startY;
+      if (event.pointerId !== drag.pointerId) return;
+      const dx = event.clientX - drag.startX;
+      const dy = event.clientY - drag.startY;
+      if (Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
+      if (!drag.hasCapture) {
+        event.currentTarget.setPointerCapture(event.pointerId);
+        drag.hasCapture = true;
+      }
+      suppressClickRef.current = true;
+      const nx = drag.baseX + dx;
+      const ny = drag.baseY + dy;
       setView((current) => (current.x === nx && current.y === ny ? current : { ...current, x: nx, y: ny }));
     }
 
     function handlePointerUp(event: React.PointerEvent<HTMLDivElement>) {
-      if (dragRef.current) {
+      if (dragRef.current?.hasCapture && event.currentTarget.hasPointerCapture(event.pointerId)) {
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
       dragRef.current = null;
@@ -821,6 +970,11 @@ export const Graph3D = React.forwardRef<Graph3DHandle, Graph3DProps>(
           })
           .filter(Boolean) as Array<{ link: GraphLink; source: Point; target: Point }>,
       [data.links, centerOf],
+    );
+
+    const hitTestLinks = React.useMemo(
+      () => (isBandLayout ? allLinks.filter(({ link }) => hlLinks.has(link.id)) : allLinks),
+      [allLinks, hlLinks, isBandLayout],
     );
 
     // ── Canvas edge renderer ─────────────────────────────────────────────────
@@ -859,6 +1013,9 @@ export const Graph3D = React.forwardRef<Graph3DHandle, Graph3DProps>(
 
         for (const item of allLinks) {
           const { link, source, target } = item;
+          const active = hlLinks.has(link.id);
+          if (isBandLayout && !active) continue;
+
           const minX = Math.min(source.x, target.x) - PAD;
           const maxX = Math.max(source.x, target.x) + PAD;
           const minY = Math.min(source.y, target.y) - PAD;
@@ -866,7 +1023,6 @@ export const Graph3D = React.forwardRef<Graph3DHandle, Graph3DProps>(
           if (maxX < vl || minX > vr || maxY < vt || minY > vb) continue;
 
           const meta = EDGE_KIND_META[link.kind];
-          const active = hlLinks.has(link.id);
           const dim = hasSelection && !active;
           const isCritical = criticalPathMode && active;
 
@@ -887,14 +1043,45 @@ export const Graph3D = React.forwardRef<Graph3DHandle, Graph3DProps>(
       });
 
       return () => cancelAnimationFrame(rafRef.current);
-    }, [allLinks, view, size, hlLinks, hasSelection, criticalPathMode]);
+    }, [allLinks, view, size, hlLinks, hasSelection, criticalPathMode, isBandLayout]);
 
     const entryCenter = layout.entryId ? centerOf(layout.entryId) : null;
     const entryTopLeft = layout.entryId ? layout.positions.get(layout.entryId) : undefined;
 
     // Memoized scene: stable element references let React skip reconciling all
     // nodes/edges while only the transform (view) changes during pan/zoom.
-    const isBandLayout = (layout as BandLayout).layoutMode === "band";
+    const domainStats = React.useMemo(() => {
+      const stats = new Map<string, DomainStats>();
+      if (!isBandLayout) return stats;
+
+      const nodeDomain = new Map<string, string>();
+      for (const node of data.nodes) {
+        const domain = node.domain ?? "Service";
+        nodeDomain.set(node.id, domain);
+        const current = stats.get(domain) ?? { nodes: 0, internal: 0, inbound: 0, outbound: 0 };
+        current.nodes += 1;
+        stats.set(domain, current);
+      }
+
+      for (const link of data.links) {
+        const sourceDomain = nodeDomain.get(link.source);
+        const targetDomain = nodeDomain.get(link.target);
+        if (!sourceDomain || !targetDomain) continue;
+
+        if (sourceDomain === targetDomain) {
+          const current = stats.get(sourceDomain);
+          if (current) current.internal += 1;
+          continue;
+        }
+
+        const sourceStats = stats.get(sourceDomain);
+        const targetStats = stats.get(targetDomain);
+        if (sourceStats) sourceStats.outbound += 1;
+        if (targetStats) targetStats.inbound += 1;
+      }
+
+      return stats;
+    }, [data.links, data.nodes, isBandLayout]);
 
     const swimlanesEl = React.useMemo(
       () =>
@@ -935,10 +1122,28 @@ export const Graph3D = React.forwardRef<Graph3DHandle, Graph3DProps>(
               >
                 {lane.domain.toUpperCase()}
               </text>
+              {isBandLayout && (() => {
+                const stats = domainStats.get(lane.domain);
+                if (!stats) return null;
+                const crossDomain = stats.inbound + stats.outbound;
+                return (
+                  <text
+                    x={boxX + boxW - 10}
+                    y={lane.y + 18}
+                    textAnchor="end"
+                    fill="var(--color-faint)"
+                    fontSize={9}
+                    fontFamily="var(--font-mono)"
+                    letterSpacing="0.04em"
+                  >
+                    {stats.nodes} nodes · {crossDomain} cross-domain · {stats.internal} internal
+                  </text>
+                );
+              })()}
             </g>
           );
         }),
-      [swimlanes, layout.width, isBandLayout],
+      [swimlanes, layout.width, isBandLayout, domainStats],
     );
 
     const railsEl = React.useMemo(
@@ -1016,15 +1221,22 @@ export const Graph3D = React.forwardRef<Graph3DHandle, Graph3DProps>(
                   stroke="transparent"
                   strokeWidth={18}
                   className="cursor-pointer"
+                  onPointerEnter={() => beginLinkHover(link.id)}
+                  onPointerLeave={clearHoverSoon}
                   onClick={(event) => {
                     event.stopPropagation();
+                    if (suppressClickRef.current) {
+                      event.preventDefault();
+                      suppressClickRef.current = false;
+                      return;
+                    }
                     onSelectLink(link.id);
                   }}
                 />
               </g>
             );
           }),
-      [allLinks, hlLinks, criticalPathMode, onSelectLink],
+      [allLinks, hlLinks, criticalPathMode, onSelectLink, beginLinkHover, clearHoverSoon],
     );
 
     // Band layout always uses chip mode (compact cards). Dagre uses chips below threshold zoom.
@@ -1060,8 +1272,19 @@ export const Graph3D = React.forwardRef<Graph3DHandle, Graph3DProps>(
               <button
                 key={node.id}
                 data-graph-control="true"
-                onClick={(event) => { event.stopPropagation(); onSelectNode(node.id); focusNode(node.id); }}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  if (suppressClickRef.current) {
+                    event.preventDefault();
+                    suppressClickRef.current = false;
+                    return;
+                  }
+                  onSelectNode(node.id);
+                  focusNode(node.id, { inspect: true });
+                }}
                 onDoubleClick={(event) => { event.stopPropagation(); onDoubleClickNode?.(node.id); }}
+                onPointerEnter={() => beginNodeHover(node.id)}
+                onPointerLeave={clearHoverSoon}
                 className="absolute cursor-pointer rounded border border-line bg-bg-2 text-left hover:bg-surface"
                 style={{
                   left: position.x,
@@ -1092,8 +1315,19 @@ export const Graph3D = React.forwardRef<Graph3DHandle, Graph3DProps>(
             <button
               key={node.id}
               data-graph-control="true"
-              onClick={(event) => { event.stopPropagation(); onSelectNode(node.id); focusNode(node.id); }}
+              onClick={(event) => {
+                event.stopPropagation();
+                if (suppressClickRef.current) {
+                  event.preventDefault();
+                  suppressClickRef.current = false;
+                  return;
+                }
+                onSelectNode(node.id);
+                focusNode(node.id, { inspect: true });
+              }}
               onDoubleClick={(event) => { event.stopPropagation(); onDoubleClickNode?.(node.id); }}
+              onPointerEnter={() => beginNodeHover(node.id)}
+              onPointerLeave={clearHoverSoon}
               className="absolute cursor-pointer rounded-lg border bg-bg-2 px-2.5 py-1.5 text-left hover:bg-surface"
               style={{
                 left: position.x,
@@ -1144,7 +1378,7 @@ export const Graph3D = React.forwardRef<Graph3DHandle, Graph3DProps>(
       [
         data.nodes, layout, hlNodes, hasSelection, criticalPathMode,
         degree, selectedNodeId, onSelectNode, onDoubleClickNode, focusNode,
-        cullViewport, chipMode,
+        cullViewport, chipMode, beginNodeHover, clearHoverSoon,
       ],
     );
 
@@ -1164,14 +1398,19 @@ export const Graph3D = React.forwardRef<Graph3DHandle, Graph3DProps>(
         <canvas
           ref={canvasRef}
           className="absolute inset-0"
-          style={{ cursor: "crosshair" }}
+          style={{ cursor: "inherit" }}
           onClick={(e) => {
+            if (suppressClickRef.current) {
+              e.preventDefault();
+              suppressClickRef.current = false;
+              return;
+            }
             // Hit-test canvas-drawn edges: sample along each bezier at 20 points.
             const rect = e.currentTarget.getBoundingClientRect();
             const px = (e.clientX - rect.left - view.x) / view.scale;
             const py = (e.clientY - rect.top - view.y) / view.scale;
             const HIT = 8;
-            for (const { link, source, target } of allLinks) {
+            for (const { link, source, target } of hitTestLinks) {
               if (hlLinks.has(link.id)) continue; // SVG layer handles active edges
               const dy = Math.max(40, Math.abs(target.y - source.y) * 0.46);
               for (let i = 0; i <= 20; i++) {
@@ -1189,13 +1428,21 @@ export const Graph3D = React.forwardRef<Graph3DHandle, Graph3DProps>(
           }}
         />
 
+        {isBandLayout && (
+          <div
+            className="pointer-events-none absolute left-4 top-4 rounded-md border border-line bg-bg/85 px-3 py-2 font-mono text-[11px] text-muted shadow-lg backdrop-blur"
+          >
+            Repo overview · hover a node to reveal direct links · click to lock
+          </div>
+        )}
+
         <div
           className="absolute left-0 top-0 origin-top-left will-change-transform"
           style={{
             width: layout.width,
             height: layout.height,
             transform: `translate3d(${view.x}px, ${view.y}px, 0) scale(${view.scale})`,
-            transition: smooth ? "transform 180ms ease-out" : "none",
+            transition: smooth ? "transform 220ms cubic-bezier(0.22, 1, 0.36, 1)" : "none",
             contain: "layout style",
           }}
         >

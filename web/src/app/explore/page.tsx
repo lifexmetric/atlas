@@ -17,6 +17,8 @@ import {
   GitBranch,
   FolderTree,
   ChevronRight,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from "lucide-react";
 import {
   GRAPH,
@@ -85,6 +87,7 @@ function ExplorePageContent() {
     graphKey: string | null;
     scope: SystemScope;
   }>({ graphKey: null, scope: { repositoryId: null, path: "" } });
+  const [groupsOpen, setGroupsOpen] = React.useState(true);
   const [graphLoad, setGraphLoad] = React.useState<{
     key: string;
     graph: GraphData | null;
@@ -343,7 +346,7 @@ function ExplorePageContent() {
           setSelectedLinkId(null);
           setNodeHistory([]);
           setPanelView("overview");
-          graphRef.current?.focusNode(next);
+          graphRef.current?.focusNode(next, { inspect: true });
         }
       }
 
@@ -356,7 +359,7 @@ function ExplorePageContent() {
           setSelectedLinkId(null);
           setNodeHistory([]);
           setPanelView("overview");
-          graphRef.current?.focusNode(prev);
+          graphRef.current?.focusNode(prev, { inspect: true });
         }
       }
     }
@@ -657,51 +660,73 @@ function ExplorePageContent() {
       </div>
 
       <div className="pointer-events-none absolute left-3 top-28 z-20 hidden sm:block">
-        <div className="pointer-events-auto w-44 rounded-lg border border-line bg-bg/90 p-2.5 backdrop-blur-sm">
-          <p className="mb-2 font-mono text-[9px] uppercase tracking-[0.14em] text-faint">Groups</p>
-          <div className="space-y-1.5">
-            {NODE_GROUPS.map((g) => (
-              <div key={g.key} className="group relative flex items-center gap-2">
-                <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: g.color }} />
-                <span className="text-[11px] font-medium" style={{ color: g.color }}>{g.key}</span>
-                <span className="ml-auto font-mono text-[10px] text-faint">
-                  {g.key === "Internal" ? "code" : g.key === "Infrastructure" ? "data" : g.key === "External" ? "apis" : "files"}
-                </span>
-                <span className="pointer-events-none absolute left-full top-1/2 ml-2 hidden w-56 -translate-y-1/2 rounded-lg border border-line bg-bg-2 p-2 text-[11px] leading-relaxed text-muted group-hover:block">
-                  {g.desc}
-                </span>
-              </div>
-            ))}
-          </div>
+        {groupsOpen ? (
+          <div className="pointer-events-auto w-44 rounded-lg border border-line bg-bg/90 p-2.5 backdrop-blur-sm">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-faint">Groups</p>
+              <button
+                onClick={() => setGroupsOpen(false)}
+                className="flex h-5 w-5 cursor-pointer items-center justify-center rounded border border-line text-faint transition-colors duration-150 hover:text-ink"
+                aria-label="Hide groups panel"
+                title="Hide groups panel"
+              >
+                <PanelLeftClose className="h-3 w-3" />
+              </button>
+            </div>
+            <div className="space-y-1.5">
+              {NODE_GROUPS.map((g) => (
+                <div key={g.key} className="group relative flex items-center gap-2">
+                  <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: g.color }} />
+                  <span className="text-[11px] font-medium" style={{ color: g.color }}>{g.key}</span>
+                  <span className="ml-auto font-mono text-[10px] text-faint">
+                    {g.key === "Internal" ? "code" : g.key === "Infrastructure" ? "data" : g.key === "External" ? "apis" : "files"}
+                  </span>
+                  <span className="pointer-events-none absolute left-full top-1/2 ml-2 hidden w-56 -translate-y-1/2 rounded-lg border border-line bg-bg-2 p-2 text-[11px] leading-relaxed text-muted group-hover:block">
+                    {g.desc}
+                  </span>
+                </div>
+              ))}
+            </div>
 
-          <div className="mt-2.5 border-t border-line pt-2">
-            <p className="mb-1.5 font-mono text-[9px] uppercase tracking-[0.14em] text-faint">Edges</p>
-            <div className="space-y-1">
-              {(Object.keys(EDGE_KIND_META) as Array<keyof typeof EDGE_KIND_META>).map((k) => (
-                <div key={k} className="flex items-center gap-2">
-                  <span
-                    className="h-0 w-3.5 shrink-0"
-                    style={{
-                      borderTopWidth: 2,
-                      borderTopStyle: EDGE_KIND_META[k].dashed ? "dashed" : "solid",
-                      borderTopColor: EDGE_KIND_META[k].color,
-                    }}
-                  />
-                  <span className="truncate text-[10px] text-muted">{EDGE_KIND_META[k].label}</span>
+            <div className="mt-2.5 border-t border-line pt-2">
+              <p className="mb-1.5 font-mono text-[9px] uppercase tracking-[0.14em] text-faint">Edges</p>
+              <div className="space-y-1">
+                {(Object.keys(EDGE_KIND_META) as Array<keyof typeof EDGE_KIND_META>).map((k) => (
+                  <div key={k} className="flex items-center gap-2">
+                    <span
+                      className="h-0 w-3.5 shrink-0"
+                      style={{
+                        borderTopWidth: 2,
+                        borderTopStyle: EDGE_KIND_META[k].dashed ? "dashed" : "solid",
+                        borderTopColor: EDGE_KIND_META[k].color,
+                      }}
+                    />
+                    <span className="truncate text-[10px] text-muted">{EDGE_KIND_META[k].label}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="mt-2.5 flex flex-wrap items-center gap-2 border-t border-line pt-2">
+              {(Object.keys(CONFIDENCE_META) as Array<keyof typeof CONFIDENCE_META>).map((k) => (
+                <div key={k} className="flex items-center gap-1 text-[10px] text-muted">
+                  <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: CONFIDENCE_META[k].color }} />
+                  {CONFIDENCE_META[k].label}
                 </div>
               ))}
             </div>
           </div>
-
-          <div className="mt-2.5 flex flex-wrap items-center gap-2 border-t border-line pt-2">
-            {(Object.keys(CONFIDENCE_META) as Array<keyof typeof CONFIDENCE_META>).map((k) => (
-              <div key={k} className="flex items-center gap-1 text-[10px] text-muted">
-                <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: CONFIDENCE_META[k].color }} />
-                {CONFIDENCE_META[k].label}
-              </div>
-            ))}
-          </div>
-        </div>
+        ) : (
+          <button
+            onClick={() => setGroupsOpen(true)}
+            className="pointer-events-auto inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-line bg-bg/90 px-2 py-1.5 font-mono text-[11px] text-muted backdrop-blur-sm transition-colors duration-150 hover:text-ink"
+            aria-label="Show groups panel"
+            title="Show groups panel"
+          >
+            <PanelLeftOpen className="h-3 w-3" />
+            Groups
+          </button>
+        )}
       </div>
 
       {!panelOpen && (
