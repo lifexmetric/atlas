@@ -358,6 +358,14 @@ ${compactForPrompt(compactArtifacts, this.config.scanMaxPromptChars)}`;
       content,
       context: args.context,
     });
+    const durableFacts = memory.operationId
+      ? buildChatDurableMemoryFacts({
+          workspaceId: args.workspaceId,
+          sessionId: args.sessionId,
+          content,
+          context: args.context,
+        })
+      : [];
 
     return {
       assistantId: args.assistantId,
@@ -369,6 +377,7 @@ ${compactForPrompt(compactArtifacts, this.config.scanMaxPromptChars)}`;
       memoryOperationId: memory.operationId ?? null,
       memoryStatus: memory,
       memoryError: memory.error ?? null,
+      durableFacts,
       responseJson: response,
     };
   }
@@ -415,10 +424,19 @@ ${compactForPrompt(compactArtifacts, this.config.scanMaxPromptChars)}`;
         },
       });
       const id = response.id ?? response.memory_id ?? response.operation_id;
+      if (typeof id !== "string") {
+        return {
+          attempted: true,
+          succeeded: false,
+          operationId: null,
+          error: "Backboard memory response did not include a memory operation id.",
+          factCount: args.facts.length,
+        };
+      }
       return {
         attempted: true,
         succeeded: true,
-        operationId: typeof id === "string" ? id : null,
+        operationId: id,
         factCount: args.facts.length,
       };
     } catch (error) {
@@ -559,8 +577,12 @@ export function enforceEvidencePolicy(content: string, context: ChatContextBundl
   const hasCitation = citedIds.length > 0;
   const hasValidCitation = validCitedIds.length > 0;
   const hasNoEvidence = trimmed.includes("I do not have evidence for that in the scanned repos yet.");
-  if (context.evidence.length === 0 && !hasNoEvidence) {
-    return `${trimmed}\n\nConfidence: uncertain. I do not have evidence for that in the scanned repos yet.`;
+  if (context.evidence.length === 0) {
+    return [
+      "I do not have evidence for that in the scanned repos yet.",
+      "",
+      "Confidence: uncertain. No retrieved scan evidence was available, so unsupported architecture claims in the model output were ignored.",
+    ].join("\n");
   }
   if (context.evidence.length > 0 && (!hasCitation || !hasValidCitation) && !hasNoEvidence) {
     const citationIds = context.evidence.slice(0, 3).map((citation) => `[${citation.id}]`).join(" ");

@@ -126,6 +126,7 @@ export function ChatPanel({
   scanId,
   selectedNode,
   selectedLink,
+  detailsOpen = false,
   onClose,
   onSelectNode,
   onSelectLink,
@@ -134,6 +135,7 @@ export function ChatPanel({
   scanId: string | null;
   selectedNode: GraphNode | null;
   selectedLink: GraphLink | null;
+  detailsOpen?: boolean;
   onClose: () => void;
   onSelectNode: (id: string) => void;
   onSelectLink: (id: string) => void;
@@ -211,7 +213,10 @@ export function ChatPanel({
   return (
     <aside
       data-testid="chat-panel"
-      className="absolute bottom-3 left-3 top-28 z-30 flex w-[min(430px,calc(100vw-24px))] flex-col border border-[#2a2a2a] bg-[#050505]/95 backdrop-blur-sm"
+      className={cn(
+        "fixed inset-x-3 top-24 z-30 flex flex-col border border-[#2a2a2a] bg-[#050505]/95 backdrop-blur-sm sm:absolute sm:bottom-3 sm:left-3 sm:right-auto sm:top-28 sm:w-[min(430px,calc(100vw-24px))]",
+        detailsOpen ? "bottom-[48dvh] sm:bottom-3" : "bottom-3",
+      )}
     >
       <div className="flex items-start justify-between gap-3 border-b border-[#2a2a2a] p-3">
         <div className="min-w-0">

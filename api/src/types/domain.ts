@@ -372,5 +372,6 @@ export interface BackboardChatResponse {
   memoryOperationId?: string | null;
   memoryStatus?: BackboardMemoryStatus | null;
   memoryError?: string | null;
+  durableFacts?: DurableMemoryFact[];
   responseJson: unknown;
 }

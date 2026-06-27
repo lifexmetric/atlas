@@ -145,7 +145,29 @@ test("2. protected API mode rejects missing or invalid auth for scan and chat ro
   expect(invalidChat.status).toBe(401);
 });
 
-test("3. real scan prerequisite returns graph nodes, edges, and evidence", async ({ request }) => {
+test("3. failed real scan submission does not fall back to demo architecture", async ({ page }) => {
+  await page.route(`${apiUrl}/api/scans`, async (route) => {
+    if (route.request().method() === "POST") {
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ message: "Synthetic scan creation failure" }),
+      });
+      return;
+    }
+    await route.fallback();
+  });
+
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByLabel(/github repository url/i).fill("github.com/fastify/fastify-plugin");
+  await page.getByRole("button", { name: /visualize/i }).click();
+
+  await expect(page.getByText("Synthetic scan creation failure")).toBeVisible();
+  await expect(page.getByTestId("scan-overlay")).toHaveCount(0);
+  await expect(page).not.toHaveURL(/\/explore/);
+});
+
+test("4. real scan prerequisite returns graph nodes, edges, and evidence", async ({ request }) => {
   test.setTimeout(420_000);
   primaryScan = await scanRepo(request, repos[0]);
   primaryGraph = await apiGet<GraphData>(request, `/api/scans/${encodeURIComponent(primaryScan.id)}/graph`);
@@ -160,7 +182,7 @@ test("3. real scan prerequisite returns graph nodes, edges, and evidence", async
   ].length).toBeGreaterThan(0);
 });
 
-test("4. real Backboard handoff chat stores an evidence-backed answer", async ({ request }) => {
+test("5. real Backboard handoff chat stores an evidence-backed answer", async ({ request }) => {
   firstSession = await apiPost<ChatSession>(request, "/api/chat/sessions", {
     workspaceId,
     title: "E2E unfinished PR handoff",
@@ -185,7 +207,7 @@ test("4. real Backboard handoff chat stores an evidence-backed answer", async ({
   expect(stored.messages.some((message) => message.content === firstAssistantMessage.content)).toBe(true);
 });
 
-test("5. UI node deep dive answers what to inspect before changing a selected node", async ({ page }) => {
+test("6. UI node deep dive answers what to inspect before changing a selected node", async ({ page }) => {
   await openRealExplore(page);
   const targetNode = primaryGraph.nodes[0];
   const nodeLocator = page.locator(`[data-testid="graph-node"][data-node-id="${targetNode.id}"]`);
@@ -200,7 +222,7 @@ test("5. UI node deep dive answers what to inspect before changing a selected no
   await expect(answer).toContainText(/Confidence|evidence|\[E\d+\]/i);
 });
 
-test("6. UI edge deep dive answers connection risk with evidence", async ({ page }) => {
+test("7. UI edge deep dive answers connection risk with evidence", async ({ page }) => {
   await openRealExplore(page);
   const edge = primaryGraph.links.find((item) => (item.evidence?.length ?? 0) > 0) ?? primaryGraph.links[0];
   const edgeLocator = page.locator(`[data-testid="graph-edge"][data-edge-id="${edge.id}"]`);
@@ -216,7 +238,37 @@ test("6. UI edge deep dive answers connection risk with evidence", async ({ page
   await expect(answer).toContainText(/Confidence|evidence|\[E\d+\]/i);
 });
 
-test("7. memory behavior reuses assistant id across handoff sessions", async ({ request }) => {
+test("8. mobile Explore handoff controls are accessible and panels stay in view", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openRealExplore(page);
+
+  const exportContext = page.getByRole("link", { name: /export context/i });
+  const handoff = page.getByRole("button", { name: /handoff assistant/i });
+  await expect(exportContext).toBeVisible();
+  await expect(handoff).toBeVisible();
+
+  const targetNode = primaryGraph.nodes[0];
+  await page.locator(`[data-testid="graph-node"][data-node-id="${targetNode.id}"]`).click({ force: true });
+  await expect(page.getByTestId("detail-panel")).toBeVisible();
+  await handoff.click();
+  await expect(page.getByTestId("chat-panel")).toBeVisible();
+
+  const viewport = page.viewportSize();
+  expect(viewport).toBeTruthy();
+  const chatBox = await page.getByTestId("chat-panel").boundingBox();
+  const detailBox = await page.getByTestId("detail-panel").boundingBox();
+  expect(chatBox).toBeTruthy();
+  expect(detailBox).toBeTruthy();
+  expect(chatBox!.x).toBeGreaterThanOrEqual(0);
+  expect(detailBox!.x).toBeGreaterThanOrEqual(0);
+  expect(chatBox!.x + chatBox!.width).toBeLessThanOrEqual(viewport!.width);
+  expect(detailBox!.x + detailBox!.width).toBeLessThanOrEqual(viewport!.width);
+  expect(chatBox!.y).toBeGreaterThanOrEqual(0);
+  expect(chatBox!.y + chatBox!.height).toBeLessThanOrEqual(detailBox!.y + 2);
+  expect(detailBox!.y + detailBox!.height).toBeLessThanOrEqual(viewport!.height);
+});
+
+test("9. memory behavior reuses assistant id across handoff sessions", async ({ request }) => {
   expect(firstAssistantMessage.memoryOperationId ?? firstAssistantMessage.memoryError).toBeTruthy();
 
   secondSession = await apiPost<ChatSession>(request, "/api/chat/sessions", {
@@ -236,7 +288,7 @@ test("7. memory behavior reuses assistant id across handoff sessions", async ({ 
   expect(result.assistantMessage.content).toMatch(/inspect|component|handoff|evidence|I do not have evidence/i);
 });
 
-test("8. organization graph behavior explains repo connections or lack of evidence", async ({ request }) => {
+test("10. organization graph behavior explains repo connections or lack of evidence", async ({ request }) => {
   test.setTimeout(420_000);
   secondaryScan = await scanRepo(request, repos[1]);
   workspaceGraph = await apiGet<GraphData>(request, `/api/workspaces/${encodeURIComponent(workspaceId)}/graph`);

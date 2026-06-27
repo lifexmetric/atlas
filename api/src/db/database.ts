@@ -5,6 +5,7 @@ import type {
   BackboardSynthesis,
   ChatCitation,
   ChatContextBundle,
+  DurableMemoryFact,
   ChatMessageRecord,
   ChatRole,
   ChatSessionRecord,
@@ -33,6 +34,18 @@ function parseJson<T>(value: string | null | undefined, fallback: T): T {
 
 function json(value: unknown): string {
   return JSON.stringify(value ?? null);
+}
+
+function isEvidenceBackedDurableFact(value: DurableMemoryFact): boolean {
+  return Boolean(
+    value?.fact?.trim() &&
+      value.commitSha &&
+      value.repo &&
+      Array.isArray(value.evidenceIds) &&
+      value.evidenceIds.length > 0 &&
+      Array.isArray(value.evidenceRefs) &&
+      value.evidenceRefs.length > 0,
+  );
 }
 
 function ensureColumn(db: SqliteDatabase, tableName: string, columnName: string, definition: string): void {
@@ -162,6 +175,7 @@ export function migrate(db: SqliteDatabase): void {
       message_id TEXT,
       memory_mode TEXT,
       memory_operation_id TEXT,
+      memory_facts_json TEXT,
       request_summary TEXT NOT NULL,
       response_json TEXT NOT NULL,
       created_at TEXT NOT NULL
@@ -208,6 +222,7 @@ export function migrate(db: SqliteDatabase): void {
 
   ensureColumn(db, "evidence", "stable_id", "TEXT");
   ensureColumn(db, "chat_messages", "memory_error", "TEXT");
+  ensureColumn(db, "backboard_records", "memory_facts_json", "TEXT");
 }
 
 export class AtlasRepository {
@@ -528,12 +543,13 @@ export class AtlasRepository {
     backboard: BackboardSynthesis;
     requestSummary: string;
   }): void {
+    const durableFacts = (input.backboard.durableFacts ?? []).filter(isEvidenceBackedDurableFact);
     this.db
       .prepare(`
         INSERT INTO backboard_records
-          (workspace_id, repository_id, scan_id, assistant_id, thread_id, run_id, message_id, memory_mode, memory_operation_id, request_summary, response_json, created_at)
+          (workspace_id, repository_id, scan_id, assistant_id, thread_id, run_id, message_id, memory_mode, memory_operation_id, memory_facts_json, request_summary, response_json, created_at)
         VALUES
-          (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         input.workspaceId,
@@ -545,6 +561,7 @@ export class AtlasRepository {
         input.backboard.messageId ?? null,
         input.backboard.memoryMode,
         input.backboard.memoryOperationId ?? null,
+        durableFacts.length > 0 ? json(durableFacts) : null,
         input.requestSummary,
         json(input.backboard.responseJson),
         nowIso(),
@@ -672,15 +689,28 @@ export class AtlasRepository {
   listBackboardMemoryFacts(workspaceId: string, limit = 12): string[] {
     const rows = this.db
       .prepare(`
-        SELECT request_summary, memory_operation_id
+        SELECT memory_operation_id, memory_facts_json
         FROM backboard_records
         WHERE workspace_id = ?
           AND memory_operation_id IS NOT NULL
+          AND memory_facts_json IS NOT NULL
         ORDER BY created_at DESC
         LIMIT ?
       `)
-      .all(workspaceId, limit) as Array<{ request_summary: string; memory_operation_id: string | null }>;
-    return rows.map((row) => `${row.request_summary} (memory ${row.memory_operation_id})`);
+      .all(workspaceId, limit) as Array<{ memory_operation_id: string | null; memory_facts_json: string | null }>;
+    const facts: string[] = [];
+    for (const row of rows) {
+      const durableFacts = parseJson<DurableMemoryFact[]>(row.memory_facts_json, []).filter(isEvidenceBackedDurableFact);
+      for (const fact of durableFacts) {
+        const evidence = fact.evidenceIds.slice(0, 4).join(", ");
+        const location = fact.evidenceRefs[0]
+          ? `${fact.evidenceRefs[0].filePath}:L${fact.evidenceRefs[0].lineStart}`
+          : "evidence-indexed scan context";
+        facts.push(`${fact.fact} (repo ${fact.repo}; commit ${fact.commitSha}; evidence ${evidence}; ${location}; memory ${row.memory_operation_id})`);
+        if (facts.length >= limit) return facts;
+      }
+    }
+    return facts;
   }
 
   countTable(tableName: string): number {

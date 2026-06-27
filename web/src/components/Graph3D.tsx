@@ -154,6 +154,7 @@ export const Graph3D = React.forwardRef<Graph3DHandle, Graph3DProps>(
 
     const hasSelection = hlNodes.size > 0 || criticalPathMode;
     const showEntryPulse = !hasSelection;
+    const minScale = size.w > 0 && size.w < 640 ? 0.22 : 0.64;
 
     const focusNode = React.useCallback((id: string) => {
       const item = nodeIndex.get(id);
@@ -179,7 +180,7 @@ export const Graph3D = React.forwardRef<Graph3DHandle, Graph3DProps>(
       },
       zoomOut: () => {
         if (size.w === 0 || size.h === 0) return;
-        const nextScale = Math.max(0.36, view.scale / 1.16);
+        const nextScale = Math.max(minScale, view.scale / 1.16);
         setView({
           scale: nextScale,
           x: size.w / 2 - ((size.w / 2 - view.x) / view.scale) * nextScale,
@@ -190,7 +191,7 @@ export const Graph3D = React.forwardRef<Graph3DHandle, Graph3DProps>(
         if (size.w === 0 || size.h === 0) return;
         const scale = Math.min(
           1.02,
-          Math.max(0.64, (size.w / CANVAS.width) * 0.9),
+          Math.max(minScale, (size.w / CANVAS.width) * 0.9),
         );
         setView({
           scale,
@@ -204,18 +205,18 @@ export const Graph3D = React.forwardRef<Graph3DHandle, Graph3DProps>(
       if (size.w === 0 || size.h === 0) return;
       const scale = Math.min(
         1.02,
-        Math.max(0.64, (size.w / CANVAS.width) * 0.9),
+        Math.max(minScale, (size.w / CANVAS.width) * 0.9),
       );
       setView({
         scale,
         x: (size.w - CANVAS.width * scale) / 2,
         y: 118,
       });
-    }, [size.h, size.w]);
+    }, [minScale, size.h, size.w]);
 
     function handleWheel(event: React.WheelEvent<HTMLDivElement>) {
       event.preventDefault();
-      const nextScale = Math.min(1.45, Math.max(0.36, view.scale - event.deltaY * 0.0008));
+      const nextScale = Math.min(1.45, Math.max(minScale, view.scale - event.deltaY * 0.0008));
       const rect = event.currentTarget.getBoundingClientRect();
       const mx = event.clientX - rect.left;
       const my = event.clientY - rect.top;

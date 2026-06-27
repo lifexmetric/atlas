@@ -50,8 +50,8 @@ export default function LandingPage() {
       setScanId(scan.id);
       setScanning(true);
     } catch (err) {
-      setSubmitError(err instanceof Error ? err.message : "Backend unavailable; opening mock demo");
-      setScanning(true);
+      setSubmitError(err instanceof Error ? err.message : "Unable to start a real repository scan");
+      setScanning(false);
     }
   }
 

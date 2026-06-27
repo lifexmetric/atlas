@@ -130,10 +130,12 @@ export class ChatService {
         content: response.content,
         memoryMode: response.memoryMode,
         memoryOperationId: response.memoryOperationId,
+        durableFacts: response.durableFacts ?? [],
         responseJson: {
           backboard: response.responseJson,
           memoryStatus: response.memoryStatus ?? null,
           memoryError: response.memoryError ?? null,
+          durableFacts: response.durableFacts ?? [],
         },
       },
       requestSummary: `chat ${sessionId}: ${content.slice(0, 120)}`,
