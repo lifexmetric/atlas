@@ -4,7 +4,7 @@ import * as React from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import {
-  Search, Maximize2, FileDown, X, ShieldAlert, Plus, Minus, GitMerge,
+  Search, Maximize2, FileDown, X, ShieldAlert, Plus, Minus, GitMerge, MessageSquare,
 } from "lucide-react";
 import {
   GRAPH,
@@ -24,6 +24,7 @@ import {
 } from "@/lib/data";
 import { getScan, getScanGraph } from "@/lib/api";
 import { Graph3D, type Graph3DHandle } from "@/components/Graph3D";
+import { ChatPanel } from "@/components/ChatPanel";
 import { NodePanel } from "@/components/NodePanel";
 import { LinkPanel } from "@/components/LinkPanel";
 import { Logo, GithubMark, cn } from "@/components/ui";
@@ -67,6 +68,7 @@ function ExplorePageContent() {
 
   const [selectedNodeId, setSelectedNodeId] = React.useState<string | null>(null);
   const [selectedLinkId, setSelectedLinkId] = React.useState<string | null>(null);
+  const [chatOpen, setChatOpen] = React.useState(false);
   const [query, setQuery] = React.useState("");
   const [activeKinds, setActiveKinds] = React.useState<Set<NodeKind>>(new Set(ALL_KINDS));
   const [highRiskOnly, setHighRiskOnly] = React.useState(false);
@@ -350,6 +352,19 @@ function ExplorePageContent() {
                 <FileDown className="h-3.5 w-3.5" />
                 <span className="hidden sm:inline">Export context</span>
               </Link>
+              <button
+                type="button"
+                onClick={() => setChatOpen((value) => !value)}
+                className={cn(
+                  "flex cursor-pointer items-center gap-1.5 border px-2.5 py-1.5 text-[13px] font-semibold transition-colors duration-150",
+                  chatOpen
+                    ? "border-[#3b82f6]/40 bg-[#3b82f6]/10 text-[#3b82f6]"
+                    : "border-[#2a2a2a] bg-[#111] text-[#888] hover:text-[#ededed]",
+                )}
+              >
+                <MessageSquare className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Handoff</span>
+              </button>
             </div>
           </div>
         </div>
@@ -513,7 +528,7 @@ function ExplorePageContent() {
 
       {/* ── Right detail panel ── */}
       {panelOpen && (
-        <div className="absolute right-0 top-0 z-30 h-full w-full max-w-[400px] border-l border-[#2a2c36]">
+        <div className="absolute right-0 top-20 z-30 h-[calc(100%-5rem)] w-full max-w-[400px] border-l border-[#2a2c36]">
           <div className="h-full overflow-hidden rounded-l-xl bg-[#181a22] animate-slide-right">
             {selectedNode && (
               <NodePanel
@@ -540,6 +555,19 @@ function ExplorePageContent() {
           </div>
         </div>
       )}
+
+      <ChatPanel
+        open={chatOpen}
+        scanId={scanId}
+        selectedNode={selectedNode}
+        selectedLink={selectedLink}
+        onClose={() => setChatOpen(false)}
+        onSelectNode={(id) => {
+          selectNode(id);
+          graphRef.current?.focusNode(id);
+        }}
+        onSelectLink={selectLink}
+      />
     </main>
   );
 }

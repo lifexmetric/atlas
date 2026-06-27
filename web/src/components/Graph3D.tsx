@@ -448,6 +448,8 @@ export const Graph3D = React.forwardRef<Graph3DHandle, Graph3DProps>(
                     fill="none"
                     stroke="transparent"
                     strokeWidth={18}
+                    data-testid="graph-edge"
+                    data-edge-id={link.id}
                     className="cursor-pointer"
                     onClick={(event) => {
                       event.stopPropagation();
@@ -474,6 +476,8 @@ export const Graph3D = React.forwardRef<Graph3DHandle, Graph3DProps>(
               <button
                 key={node.id}
                 data-graph-control="true"
+                data-testid="graph-node"
+                data-node-id={node.id}
                 onClick={(event) => {
                   event.stopPropagation();
                   onSelectNode(node.id);

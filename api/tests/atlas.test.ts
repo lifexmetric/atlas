@@ -3,6 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
+import { buildChatContext, formatCitationList } from "../src/chat/context.js";
+import { buildChatPrompt, enforceEvidencePolicy, extractDurableMemoryFacts } from "../src/backboard/client.js";
 import { AtlasRepository, migrate, openDatabase, type SqliteDatabase } from "../src/db/database.js";
 import { BackboardClient, buildDurableMemoryFacts } from "../src/backboard/client.js";
 import { buildWorkspaceGraph } from "../src/graph/workspace.js";
@@ -12,7 +14,14 @@ import { parseGitHubRepo, repoUrlSchema } from "../src/github/url.js";
 import { scanRepository } from "../src/scanner/scanner.js";
 import { buildApp } from "../src/server/app.js";
 import { ScanService } from "../src/server/scan-service.js";
-import type { BackboardSynthesis, GraphData, RepositoryRecord } from "../src/types/domain.js";
+import { ChatService, type ChatBackboardLike } from "../src/server/chat-service.js";
+import type {
+  BackboardChatResponse,
+  BackboardSynthesis,
+  ChatContextBundle,
+  GraphData,
+  RepositoryRecord,
+} from "../src/types/domain.js";
 import { compactForPrompt, redactSecrets } from "../src/util/redact.js";
 
 const fixtureRoot = path.resolve("tests/fixtures/sample-js");
@@ -50,6 +59,32 @@ function repoRecord(id = "repo_fixture", packageName = "@atlas/sample-service"):
     createdAt: new Date(0).toISOString(),
     updatedAt: new Date(0).toISOString(),
   };
+}
+
+async function seedCompletedScan(repository: AtlasRepository): Promise<{ repo: RepositoryRecord; graph: GraphData }> {
+  repository.ensureWorkspace("test");
+  const repo = repository.upsertRepository({
+    id: "repo_fixture",
+    workspaceId: "test",
+    owner: "atlas",
+    name: "sample-service",
+    url: "https://github.com/atlas/sample-service",
+    cloneUrl: "https://github.com/atlas/sample-service.git",
+    packageName: "@atlas/sample-service",
+    lastCommitSha: "abc1234",
+  });
+  const scan = repository.createScan({
+    id: "scan_fixture",
+    workspaceId: "test",
+    repositoryId: repo.id,
+    repoUrl: repo.url,
+  });
+  const artifacts = await scanRepository(fixtureRoot, { maxFiles: 100, maxFileBytes: 100_000 });
+  const graph = buildGraphFromArtifacts({ repository: repo, commitSha: "abc1234", artifacts, backboard: fakeBackboard() });
+  const context = buildScanContext({ repository: repo, graph, commitSha: "abc1234" });
+  repository.replaceGraphRows({ workspaceId: "test", repositoryId: repo.id, scanId: scan.id, graph });
+  repository.completeScan({ scanId: scan.id, commitSha: "abc1234", graph, context, artifacts, backboard: fakeBackboard() });
+  return { repo, graph };
 }
 
 describe("repo URL validation", () => {
@@ -336,6 +371,242 @@ describe("Backboard payload safety", () => {
 
     expect(requestBodies[0].memory).toBe("Off");
     expect(String(requestBodies[1].content)).toContain("evidence-indexed facts");
+  });
+});
+
+describe("handoff chat backend", () => {
+  let tempDir: string;
+  let db: SqliteDatabase;
+  let repository: AtlasRepository;
+
+  class RecordingBackboard implements ChatBackboardLike {
+    createCalls = 0;
+    chatCalls: Array<{
+      assistantId: string;
+      threadId?: string | null;
+      sessionId: string;
+      workspaceId: string;
+      question: string;
+      context: ChatContextBundle;
+    }> = [];
+
+    async createAssistant(): Promise<string> {
+      this.createCalls += 1;
+      return "asst_handoff";
+    }
+
+    async chat(args: {
+      assistantId: string;
+      threadId?: string | null;
+      sessionId: string;
+      workspaceId: string;
+      question: string;
+      context: ChatContextBundle;
+    }): Promise<BackboardChatResponse> {
+      this.chatCalls.push(args);
+      const citation = args.context.evidence[0]?.id ?? "E1";
+      const node = args.context.nodes[0]?.label ?? "the selected component";
+      return {
+        assistantId: args.assistantId,
+        threadId: args.threadId ?? "thread_handoff",
+        runId: "run_handoff",
+        messageId: "msg_handoff",
+        content: [
+          `Direct answer: a takeover engineer should inspect ${node} first. [${citation}]`,
+          `Supporting evidence: [${citation}]`,
+          "Confidence: confirmed",
+          `Handoff notes: ${node} is the next concrete inspection target. [${citation}]`,
+        ].join("\n"),
+        memoryMode: "Auto",
+        memoryOperationId: "mem_handoff",
+        responseJson: { ok: true },
+      };
+    }
+
+    async syncChatMemory(): Promise<{ memoryOperationId: string; memoryError: null }> {
+      return { memoryOperationId: "mem_sync", memoryError: null };
+    }
+  }
+
+  beforeEach(async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "atlas-chat-"));
+    db = openDatabase(path.join(tempDir, "atlas.db"));
+    migrate(db);
+    repository = new AtlasRepository(db);
+    await seedCompletedScan(repository);
+  });
+
+  afterEach(async () => {
+    db.close();
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it("creates chat sessions, reuses the workspace assistant, and stores handoff answers", async () => {
+    const backboard = new RecordingBackboard();
+    const service = new ChatService(
+      loadConfig({
+        rootDir: tempDir,
+        databaseUrl: `file:${path.join(tempDir, "atlas.db")}`,
+        databasePath: path.join(tempDir, "atlas.db"),
+        workspaceId: "test",
+        backboardApiKey: "test",
+      }),
+      repository,
+      backboard,
+    );
+
+    const first = await service.createSession({});
+    const second = await service.createSession({});
+    expect(first.assistantId).toBe("asst_handoff");
+    expect(second.assistantId).toBe("asst_handoff");
+    expect(backboard.createCalls).toBe(1);
+
+    const result = await service.sendMessage(first.id, {
+      content: "What should a new developer know before taking over this repo?",
+      scanId: "scan_fixture",
+    });
+
+    expect(result.assistantMessage.content).toContain("takeover engineer");
+    expect(result.assistantMessage.citations.length).toBeGreaterThan(0);
+    expect(result.session.threadId).toBe("thread_handoff");
+    expect(repository.countTable("chat_sessions")).toBe(2);
+    expect(repository.countTable("chat_messages")).toBe(2);
+    expect(repository.countTable("backboard_records")).toBeGreaterThan(0);
+  });
+
+  it("retrieves selected graph context and formats evidence citations", () => {
+    const graph = repository.getScan("scan_fixture")!.graph!;
+    const selectedNode = graph.nodes.find((node) => node.kind === "database") ?? graph.nodes[0];
+    const context = buildChatContext({
+      repository,
+      workspaceId: "test",
+      question: "What should I inspect before changing database handoff work?",
+      nodeId: selectedNode.id,
+    });
+
+    expect(context.nodes.some((node) => node.id === selectedNode.id)).toBe(true);
+    expect(context.evidence.length).toBeGreaterThan(0);
+    expect(context.evidence[0].stableId).toBeTruthy();
+    expect(context.evidence[0].commitSha).toBe("abc1234");
+    expect(context.generatedMarkdown).toContain("Evidence Citations");
+    expect(formatCitationList(context.evidence)).toContain("[E1]");
+  });
+
+  it("constructs Backboard handoff prompts with secrets redacted", () => {
+    const context = buildChatContext({
+      repository,
+      workspaceId: "test",
+      question: "Before I change this module, what should I verify?",
+      scanId: "scan_fixture",
+    });
+    const rawSecret = "sk_test_123456789012345678901234567890123456";
+    const prompt = buildChatPrompt({
+      question: `handoff with API_KEY=${rawSecret}`,
+      context: {
+        ...context,
+        generatedMarkdown: `${context.generatedMarkdown}\nTOKEN=${rawSecret}`,
+      },
+      maxChars: 100_000,
+    });
+
+    expect(prompt).toContain("codebase handoff assistant");
+    expect(prompt).not.toContain(rawSecret);
+    expect(prompt).toContain("[REDACTED]");
+  });
+
+  it("extracts only evidence-backed durable handoff memory facts", () => {
+    const context = buildChatContext({
+      repository,
+      workspaceId: "test",
+      question: "What handoff risk matters?",
+      scanId: "scan_fixture",
+    });
+    const facts = extractDurableMemoryFacts(
+      [
+        "- service queue-eventing is a handoff risk to inspect. [E1]",
+        "- maybe there is a hidden owner with no evidence.",
+        "- uncertain: the payment path may call a private API. [E2]",
+      ].join("\n"),
+      context,
+    );
+
+    expect(facts).toHaveLength(1);
+    expect(facts[0]).toContain("queue-eventing");
+  });
+
+  it("marks missing evidence answers uncertain instead of hallucinating", () => {
+    const context: ChatContextBundle = {
+      workspaceId: "test",
+      question: "Who owns the unreleased migration?",
+      graphSummary: { repositories: 0, scans: 0, nodes: 0, edges: 0, crossRepoConnections: 0 },
+      repositories: [],
+      selected: { type: "workspace", id: "test" },
+      nodes: [],
+      edges: [],
+      evidence: [],
+      generatedMarkdown: "No matching context.",
+      previousMessages: [],
+      memoryFacts: [],
+      weakEvidence: true,
+    };
+
+    const answer = enforceEvidencePolicy("The migration owner is the platform team.", context);
+    expect(answer).toContain("I do not have evidence for that in the scanned repos yet.");
+    expect(answer).toContain("uncertain");
+  });
+
+  it("serves the chat API routes with persisted assistant messages", async () => {
+    const backboard = new RecordingBackboard();
+    const app = await buildApp({
+      config: loadConfig({
+        rootDir: tempDir,
+        databaseUrl: `file:${path.join(tempDir, "atlas.db")}`,
+        databasePath: path.join(tempDir, "atlas.db"),
+        workspaceId: "test",
+        backboardApiKey: "test",
+      }),
+      repository,
+      chatService: new ChatService(
+        loadConfig({
+          rootDir: tempDir,
+          databaseUrl: `file:${path.join(tempDir, "atlas.db")}`,
+          databasePath: path.join(tempDir, "atlas.db"),
+          workspaceId: "test",
+          backboardApiKey: "test",
+        }),
+        repository,
+        backboard,
+      ),
+    });
+
+    const sessionResponse = await app.inject({
+      method: "POST",
+      url: "/api/chat/sessions",
+      payload: { title: "PR handoff" },
+    });
+    expect(sessionResponse.statusCode).toBe(201);
+    const session = sessionResponse.json() as { id: string; assistantId: string };
+    expect(session.assistantId).toBe("asst_handoff");
+
+    const messageResponse = await app.inject({
+      method: "POST",
+      url: `/api/chat/sessions/${session.id}/messages`,
+      payload: {
+        content: "What should a new developer inspect before taking over this unfinished PR?",
+        scanId: "scan_fixture",
+      },
+    });
+    expect(messageResponse.statusCode).toBe(201);
+    expect(messageResponse.json().assistantMessage.content).toContain("Handoff notes");
+
+    const listResponse = await app.inject({
+      method: "GET",
+      url: `/api/chat/sessions/${session.id}/messages`,
+    });
+    expect(listResponse.statusCode).toBe(200);
+    expect(listResponse.json().messages).toHaveLength(2);
+
+    await app.close();
   });
 });
 
