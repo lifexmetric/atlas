@@ -67,6 +67,10 @@ export function NodePanel({
   const deps = dependenciesOf(node.id, graphData);
   const dependents = dependentsOf(node.id, graphData);
   const hasConnections = deps.length > 0 || dependents.length > 0;
+  const lookupNode = React.useCallback(
+    (id: string) => nodeById(id, graphData),
+    [graphData],
+  );
 
   async function copy() {
     await navigator.clipboard.writeText(nodeContextMarkdown(node));
@@ -224,7 +228,7 @@ export function NodePanel({
                   <ConnRow
                     key={l.id}
                     arrow="out"
-                    label={nodeById(l.target, graphData)?.label ?? l.target}
+                    label={lookupNode(l.target)?.label ?? l.target}
                     kindLabel={EDGE_KIND_META[l.kind].label}
                     color={EDGE_KIND_META[l.kind].color}
                     onClick={() => onSelectLink(l.id)}
@@ -243,7 +247,7 @@ export function NodePanel({
                   <ConnRow
                     key={l.id}
                     arrow="in"
-                    label={nodeById(l.source, graphData)?.label ?? l.source}
+                    label={lookupNode(l.source)?.label ?? l.source}
                     kindLabel={EDGE_KIND_META[l.kind].label}
                     color={EDGE_KIND_META[l.kind].color}
                     onClick={() => onSelectLink(l.id)}
@@ -302,7 +306,7 @@ export function NodePanel({
                   {deps
                     .filter((l) => l.code)
                     .map((l) => {
-                      const target = nodeById(l.target, graphData);
+                      const target = lookupNode(l.target);
                       return (
                         <div key={l.id}>
                           <div className="mb-1.5 flex items-center gap-2">

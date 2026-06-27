@@ -17,7 +17,7 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { ScanOverlay } from "@/components/ScanOverlay";
 import { createScan } from "@/lib/api";
 
-const SAMPLES = ["acme/payments-platform", "vercel/next.js", "stripe/stripe-node"];
+const SAMPLES = ["fastify/fastify-plugin", "fastify/fastify-autoload", "stripe/stripe-node"];
 
 const FEATURES = [
   {
@@ -136,6 +136,8 @@ export default function LandingPage() {
     if (!target || creatingScan) return;
     setError(null);
     setRepo(target);
+    setScanId(null);
+    setScanning(false);
     setCreatingScan(true);
     try {
       const scan = await createScan(target);
@@ -171,7 +173,7 @@ export default function LandingPage() {
                 ((e.target as HTMLElement).style.color = "var(--color-muted)")
               }
             >
-              Live demo
+              Workspace
             </Link>
             <a
               href="https://github.com"
@@ -212,7 +214,7 @@ export default function LandingPage() {
             className="font-mono text-[12px]"
             style={{ color: "var(--color-faint)" }}
           >
-            Demo build — sample payments-platform
+            Real repo scans · workspace graph
           </span>
         </div>
 
@@ -238,7 +240,7 @@ export default function LandingPage() {
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            start();
+            void start();
           }}
           className="mb-4 flex w-full max-w-xl items-center gap-0 rounded-lg border transition-colors duration-150"
           style={{
@@ -266,7 +268,7 @@ export default function LandingPage() {
           </div>
           <button
             type="submit"
-            disabled={creatingScan}
+            disabled={creatingScan || scanning}
             className="flex shrink-0 cursor-pointer items-center gap-2 rounded-r-lg px-4 py-3 text-sm font-semibold text-white transition-opacity duration-150 hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
             style={{ backgroundColor: "var(--color-accent)" }}
           >
@@ -289,7 +291,7 @@ export default function LandingPage() {
           {SAMPLES.map((s) => (
             <button
               key={s}
-              onClick={() => start(s)}
+              onClick={() => void start(s)}
               className="cursor-pointer rounded-md border px-2.5 py-1 font-mono transition-colors duration-150"
               style={{
                 borderColor: "var(--color-line)",
@@ -441,7 +443,7 @@ export default function LandingPage() {
               ((e.target as HTMLElement).style.color = "var(--color-faint)")
             }
           >
-            Open demo <ArrowRight className="h-3.5 w-3.5" />
+            Open workspace <ArrowRight className="h-3.5 w-3.5" />
           </Link>
         </div>
       </footer>

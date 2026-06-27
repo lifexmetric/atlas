@@ -1,8 +1,9 @@
 import type { Confidence, EdgeKind, GraphData, GraphLink, GraphNode, NodeKind } from "./data";
 
-const API_URL = (process.env.NEXT_PUBLIC_ATLAS_API_URL ?? "http://localhost:3001").replace(/\/$/, "");
-const API_TOKEN = process.env.NEXT_PUBLIC_ATLAS_API_AUTH_TOKEN;
-export const DEFAULT_WORKSPACE_ID = process.env.NEXT_PUBLIC_ATLAS_WORKSPACE_ID ?? "local-dev";
+export const ATLAS_API_URL = (process.env.NEXT_PUBLIC_ATLAS_API_URL ?? "http://localhost:3001").replace(/\/$/, "");
+const API_TOKEN = process.env.NEXT_PUBLIC_ATLAS_API_AUTH_TOKEN?.trim();
+export const DEFAULT_WORKSPACE_ID = process.env.NEXT_PUBLIC_ATLAS_WORKSPACE_ID?.trim() || "local-dev";
+export const ATLAS_WORKSPACE_ID = DEFAULT_WORKSPACE_ID;
 
 const NODE_KINDS = new Set<NodeKind>(["service", "external", "database", "queue", "auth", "config"]);
 const EDGE_KINDS = new Set<EdgeKind>(["sync", "async", "db", "package", "config", "auth", "webhook"]);
@@ -15,11 +16,41 @@ export interface ScanRecord {
   workspaceId: string;
   repositoryId: string;
   repoUrl: string;
+  commitSha?: string | null;
   status: ScanStatus;
   error?: string | null;
   createdAt: string;
   startedAt?: string | null;
   completedAt?: string | null;
+  backboardAssistantId?: string | null;
+  backboardThreadId?: string | null;
+  backboardRunId?: string | null;
+}
+
+export interface RepositoryRecord {
+  id: string;
+  workspaceId: string;
+  owner: string;
+  name: string;
+  url: string;
+  cloneUrl: string;
+  packageName?: string | null;
+  lastCommitSha?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WorkspaceGraph extends GraphData {
+  workspaceId: string;
+  repositories: RepositoryRecord[];
+  crossRepoConnections: Array<{
+    id: string;
+    sourceRepositoryId: string;
+    targetRepositoryId: string;
+    sourcePackage: string;
+    targetPackage: string;
+    summary: string;
+  }>;
 }
 
 export interface ScanEvent {
@@ -41,6 +72,51 @@ export interface ScanExport {
   combinedMarkdown: string;
 }
 
+export type ExportResponse = ScanExport;
+
+export interface ChatCitation {
+  id: string;
+  stableId?: string;
+  label: string;
+  subjectType: "node" | "edge" | "repo" | "workspace";
+  subjectId?: string;
+  repositoryId?: string;
+  scanId?: string;
+  commitSha?: string | null;
+  filePath?: string;
+  lineStart?: number;
+  lineEnd?: number;
+  snippet?: string;
+  detector?: string;
+  confidenceReason?: string;
+  confidence?: Confidence;
+}
+
+export interface ChatSession {
+  id: string;
+  workspaceId: string;
+  title: string;
+  assistantId: string;
+  threadId?: string | null;
+  selectedNodeId?: string | null;
+  selectedEdgeId?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  sessionId: string;
+  role: "user" | "assistant";
+  content: string;
+  citations: ChatCitation[];
+  backboardRunId?: string | null;
+  backboardMessageId?: string | null;
+  memoryOperationId?: string | null;
+  memoryError?: string | null;
+  createdAt: string;
+}
+
 export class AtlasApiError extends Error {
   status: number;
 
@@ -59,7 +135,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (API_TOKEN) headers.set("Authorization", `Bearer ${API_TOKEN}`);
 
-  const res = await fetch(`${API_URL}${path}`, {
+  const res = await fetch(`${ATLAS_API_URL}${path}`, {
     ...init,
     headers,
     cache: "no-store",
@@ -129,33 +205,75 @@ export function normalizeGraph(graph: GraphData): GraphData {
       failure: text(link.failure, "No failure mode inferred yet."),
       risks: Array.isArray(link.risks) ? link.risks : [],
       confidence: confidence(link.confidence),
+      evidence: Array.isArray(link.evidence) ? link.evidence : [],
     })),
   };
 }
 
-export function createScan(repoUrl: string, workspaceId = DEFAULT_WORKSPACE_ID) {
+export function createScan(repoUrl: string, workspaceId = DEFAULT_WORKSPACE_ID): Promise<ScanRecord> {
   return request<ScanRecord>("/api/scans", {
     method: "POST",
     body: JSON.stringify({ repoUrl, workspaceId }),
   });
 }
 
-export function getScan(scanId: string) {
+export function getScan(scanId: string): Promise<ScanRecord> {
   return request<ScanRecord>(`/api/scans/${encodeURIComponent(scanId)}`);
 }
 
-export async function getScanEvents(scanId: string) {
+export async function getScanEvents(scanId: string): Promise<ScanEvent[]> {
   const result = await request<{ scanId: string; events: ScanEvent[] }>(
     `/api/scans/${encodeURIComponent(scanId)}/events`,
   );
   return result.events;
 }
 
-export async function getScanGraph(scanId: string) {
+export async function getScanGraph(scanId: string): Promise<GraphData> {
   const graph = await request<GraphData>(`/api/scans/${encodeURIComponent(scanId)}/graph`);
   return normalizeGraph(graph);
 }
 
-export function getScanExport(scanId: string) {
+export async function getWorkspaceGraph(workspaceId = ATLAS_WORKSPACE_ID): Promise<WorkspaceGraph> {
+  const graph = await request<WorkspaceGraph>(`/api/workspaces/${encodeURIComponent(workspaceId)}/graph`);
+  return {
+    ...graph,
+    ...normalizeGraph(graph),
+    workspaceId: graph.workspaceId,
+    repositories: Array.isArray(graph.repositories) ? graph.repositories : [],
+    crossRepoConnections: Array.isArray(graph.crossRepoConnections) ? graph.crossRepoConnections : [],
+  };
+}
+
+export function getScanExport(scanId: string): Promise<ScanExport> {
   return request<ScanExport>(`/api/scans/${encodeURIComponent(scanId)}/export`);
+}
+
+export function createChatSession(input: {
+  title?: string;
+  selectedNodeId?: string | null;
+  selectedEdgeId?: string | null;
+}): Promise<ChatSession> {
+  return request<ChatSession>("/api/chat/sessions", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function getChatMessages(sessionId: string): Promise<{ sessionId: string; messages: ChatMessage[] }> {
+  return request<{ sessionId: string; messages: ChatMessage[] }>(
+    `/api/chat/sessions/${encodeURIComponent(sessionId)}/messages`,
+  );
+}
+
+export function sendChatMessage(
+  sessionId: string,
+  input: { content: string; nodeId?: string | null; edgeId?: string | null; scanId?: string | null },
+): Promise<{ session: ChatSession; userMessage: ChatMessage; assistantMessage: ChatMessage }> {
+  return request<{ session: ChatSession; userMessage: ChatMessage; assistantMessage: ChatMessage }>(
+    `/api/chat/sessions/${encodeURIComponent(sessionId)}/messages`,
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    },
+  );
 }

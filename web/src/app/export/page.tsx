@@ -35,7 +35,7 @@ import { getScanExport } from "@/lib/api";
 interface ContextFile {
   id: string;
   name: string;
-  group: "brief" | "risk" | "node" | "link";
+  group: "brief" | "risk" | "node" | "link" | "metadata";
   content: string;
   nodeId?: string;
 }
@@ -134,10 +134,11 @@ function CriticalityBar({ value }: { value: number }) {
 }
 
 function groupForPath(path: string): ContextFile["group"] {
+  if (path === "system-brief.md") return "brief";
   if (path.includes("risk")) return "risk";
   if (path.startsWith("node-context/")) return "node";
   if (path.startsWith("link-context/")) return "link";
-  return "brief";
+  return "metadata";
 }
 
 function DepCard({
@@ -573,6 +574,7 @@ function ExportPageContent() {
 
   const nodeFiles = files.filter((f) => f.group === "node");
   const linkFiles = files.filter((f) => f.group === "link");
+  const metadataFiles = files.filter((f) => f.group === "metadata");
   const activeNode =
     !scanId && active.nodeId ? GRAPH.nodes.find((n) => n.id === active.nodeId) ?? null : null;
 
@@ -582,7 +584,7 @@ function ExportPageContent() {
       <header className="border-b border-line">
         <div className="mx-auto flex h-11 max-w-[1600px] items-center gap-3 px-4">
           <Link
-            href="/explore"
+            href={scanId ? `/explore?scanId=${encodeURIComponent(scanId)}` : "/explore"}
             className="flex cursor-pointer items-center gap-1.5 rounded-lg border border-line px-2.5 py-1.5 text-[13px] text-muted transition-colors duration-150 hover:border-line-2 hover:text-ink"
           >
             <ArrowLeft className="h-3.5 w-3.5" />
@@ -618,6 +620,13 @@ function ExportPageContent() {
               <FileItem key={f.id} file={f} active={f.id === activeId} onClick={() => setActiveId(f.id)} />
             ))}
           </FileGroup>
+          {metadataFiles.length > 0 && (
+            <FileGroup icon={<FileText className="h-3 w-3" />} label={`Metadata · ${metadataFiles.length}`}>
+              {metadataFiles.map((f) => (
+                <FileItem key={f.id} file={f} active={f.id === activeId} onClick={() => setActiveId(f.id)} />
+              ))}
+            </FileGroup>
+          )}
           <FileGroup icon={<Boxes className="h-3 w-3" />} label={`Nodes · ${nodeFiles.length}`}>
             {nodeFiles.map((f) => (
               <FileItem key={f.id} file={f} active={f.id === activeId} onClick={() => setActiveId(f.id)} />

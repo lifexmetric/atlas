@@ -32,6 +32,9 @@ export interface GraphNode {
   confidence: Confidence;
   risks: string[];
   path?: string;
+  repositoryId?: string;
+  scanId?: string;
+  evidence?: Evidence[];
 }
 
 export interface GraphLink {
@@ -49,11 +52,24 @@ export interface GraphLink {
   risks: string[];
   confidence: Confidence;
   beforeYouChange?: string;
+  repositoryId?: string;
+  scanId?: string;
+  evidence?: Evidence[];
 }
 
 export interface GraphData {
   nodes: GraphNode[];
   links: GraphLink[];
+}
+
+export interface Evidence {
+  id?: string;
+  filePath: string;
+  lineStart: number;
+  lineEnd: number;
+  snippet: string;
+  detector: string;
+  confidenceReason: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -662,6 +678,10 @@ export function nodeById(id: string, graph: GraphData = GRAPH): GraphNode | unde
   return graph.nodes.find((n) => n.id === id);
 }
 
+export function nodeByIdIn(graph: GraphData, id: string): GraphNode | undefined {
+  return nodeById(id, graph);
+}
+
 export function linkEndpoints(link: GraphLink, graph: GraphData = GRAPH): {
   source: GraphNode | undefined;
   target: GraphNode | undefined;
@@ -669,12 +689,27 @@ export function linkEndpoints(link: GraphLink, graph: GraphData = GRAPH): {
   return { source: nodeById(link.source, graph), target: nodeById(link.target, graph) };
 }
 
+export function linkEndpointsIn(graph: GraphData, link: GraphLink): {
+  source: GraphNode | undefined;
+  target: GraphNode | undefined;
+} {
+  return linkEndpoints(link, graph);
+}
+
 export function dependenciesOf(nodeId: string, graph: GraphData = GRAPH): GraphLink[] {
   return graph.links.filter((l) => l.source === nodeId);
 }
 
+export function dependenciesOfIn(graph: GraphData, nodeId: string): GraphLink[] {
+  return dependenciesOf(nodeId, graph);
+}
+
 export function dependentsOf(nodeId: string, graph: GraphData = GRAPH): GraphLink[] {
   return graph.links.filter((l) => l.target === nodeId);
+}
+
+export function dependentsOfIn(graph: GraphData, nodeId: string): GraphLink[] {
+  return dependentsOf(nodeId, graph);
 }
 
 // ---------------------------------------------------------------------------
